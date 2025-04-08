@@ -1,2 +1,3 @@
 dataset/*/*.csv
+processed/*
 */__pycache__/*

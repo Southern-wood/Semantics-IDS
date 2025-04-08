@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import random
 
 def noise(df, target_columns, intensity):
@@ -20,15 +21,25 @@ def missing(df, target_columns, missing_ratio):
 
 
 def duplicate(df, target_columns, duplicate_ratio, duplicate_length):
+  num_rows = df.shape[0]
+  possible_start_indices = np.arange(num_rows)
+  num_duplicates = int(num_rows * duplicate_ratio)
+  
   for target_column in target_columns:
-    # Each column gets a random duplicate length, and a random duplicate ratio
-    col_idx = df.columns.get_loc(target_column)
-    row_idxs = list(range(df.shape[0]))
-    row_idxs = random.sample(row_idxs, int(len(row_idxs) * duplicate_ratio))
-    stuck_length = random.randint(1, duplicate_length)
-    for row_idx in row_idxs:
-      if row_idx + stuck_length < df.shape[0]:
-        df.iloc[row_idx:row_idx + stuck_length, col_idx] = df.iloc[row_idx, col_idx]
+    # Work on the underlying NumPy array for efficiency
+    column_data = df[target_column].values 
+    
+    # Use np.random.choice for potentially better performance on large arrays
+    start_indices = np.random.choice(possible_start_indices, size = num_duplicates, replace=False)
+
+    # Iterate through the selected starting points
+    for start_idx in start_indices:
+      stuck_length = random.randint(1, duplicate_length) 
+      end_idx = min(start_idx + stuck_length, num_rows) 
+      value_to_duplicate = column_data[start_idx] 
+      if start_idx < end_idx: 
+          column_data[start_idx:end_idx] = value_to_duplicate
+    df[target_column] = column_data
   return df
 
 
@@ -47,13 +58,14 @@ def mismatch(df, target_columns, relative_frequency):
     # Each column gets a random relative frequency
     column_data = df[target_column].values
     step = random.randint(2, relative_frequency)
-    sampled_data = np.zeros_like(column_data, dtype=column_data.dtype)
+
+    # Create a new array with NaN values
+    sampled_data = np.full_like(column_data, np.nan, dtype=np.float64) 
     sampled_data[::step] = column_data[::step]
-    # Fill the rest of the sampled data with the last valid value
-    for i in range(1, len(sampled_data)):
-      if sampled_data[i] == 0:
-        sampled_data[i] = sampled_data[i - 1]
-    df[target_column] = sampled_data
+
+    series = pd.Series(sampled_data)
+    series = series.ffill().bfill()  # Forward and backward fill to handle NaN values
+    df[target_column] = series.values
   return df
 
 

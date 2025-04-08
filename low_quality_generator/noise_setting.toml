@@ -1,5 +1,5 @@
 data_folder = "../dataset/"
-output_folder = "../processed_dataset/"
+output_folder = "../processed/"
 
 [low_quality_types.pure]
 
@@ -45,12 +45,12 @@ level = "high"
 feature_ratio = 0.4
 delay_length = 200
 
-[[low_quality_types.mismacth]]
+[[low_quality_types.mismatch]]
 level = "low"
 feature_ratio = 0.2
 relative_frequency = 50
 
-[[low_quality_types.mismacth]]
+[[low_quality_types.mismatch]]
 level = "high"
 feature_ratio = 0.6
 relative_frequency = 100
