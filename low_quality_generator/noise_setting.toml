@@ -1,5 +1,5 @@
-data_folder = "dataset/"
-output_folder = "processed_dataset/"
+data_folder = "../dataset/"
+output_folder = "../processed_dataset/"
 
 [low_quality_types.pure]
 
