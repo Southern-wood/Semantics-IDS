@@ -1,3 +1,4 @@
 dataset/*/*.csv
 processed/*
-*/__pycache__/*
+*__pycache__*
+our/trained_models/*
