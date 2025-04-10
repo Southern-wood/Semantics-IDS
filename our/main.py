@@ -74,6 +74,12 @@ def backprop(enhanced_model, data, optimizer, scheduler, mode='train'):
 	global_step = 0
 
 	loss_list = []
+	
+	# Precompute empty array for faster percentile calculations
+	if mode == 'feature_selection':
+		all_losses = np.array([])
+		update_counter = 0
+		max_history_size = 10000  # Limit history size for efficiency
 
 	for d, _ in tqdm(dataloader):
 		window = d.permute(1, 0, 2)
@@ -95,13 +101,29 @@ def backprop(enhanced_model, data, optimizer, scheduler, mode='train'):
 			enhanced_model.detector_optimizer.step()
 
 		elif mode == 'feature_selection':
+			loss_mean = loss.mean().item()
+				
+			# Add current batch loss to history
+			current_loss = loss[0].detach().cpu().numpy()
+			all_losses = np.append(all_losses, current_loss)
+			update_counter += 1
+				
+			# Limit history size for performance
+			if len(all_losses) > max_history_size:
+				all_losses = all_losses[-max_history_size:]
+			
 			selector_update = (global_step % update_freq) == (update_freq - 1)
-			if selector_update:
-				# Update the feature selection weights
-				enhanced_model.weights_optimizer.zero_grad()
-				loss.mean().backward()
-				enhanced_model.update_tau(global_step)
-				enhanced_model.weights_optimizer.step()
+			# Only calculate percentile and update if we have enough history
+			if selector_update and update_counter > 100:
+				percentile = np.percentile(all_losses, 95) if len(all_losses) > 0 else float('inf')
+				
+				# Only update if current loss is below the 95th percentile
+				if loss_mean < percentile:
+					enhanced_model.weights_optimizer.zero_grad()
+					loss.mean().backward()
+					enhanced_model.update_tau(global_step)
+					enhanced_model.weights_optimizer.step()
+			
 			loss = loss[0]
 			loss_list.append(loss.detach().cpu())
 		elif mode == 'test':
@@ -128,8 +150,10 @@ if __name__ == '__main__':
 	num_epoch = args.num_epoch
 	model_save_path = args.model_save_path
 
-	file_path = os.path.join(model_save_path, str(dataset), str(noise_type) + '_' + str(noise_level) + '_checkpoint.pth')
-	file_path = file_path.replace('checkpoint', 'checkpoint_assa_top')
+	if noise_type != 'pure':
+		noise_type = noise_type + '_' + noise_level
+	
+	file_path = os.path.join(model_save_path, dataset, noise_type + '_checkpoint.pth')
 	train_file_path, label_file_path = generate_trainpath_and_label('../processed', dataset, noise_type, noise_level)
 	testfiles = generate_testfiles('../processed', dataset)
 
@@ -144,7 +168,7 @@ if __name__ == '__main__':
 	train_loader = DataLoader(train_np, batch_size=train_np.shape[0])
 	feature_num = train_data.shape[1]
 
-	model, optimizer, scheduler, epoch, accuracy_list = load_model(model_name, feature_num, dataset, noise_type, noise_level)
+	model, optimizer, scheduler, epoch, accuracy_list = load_model(model_name, feature_num)
 	enhanced_model = FeatureProxy(model, optimizer, scheduler, feature_num, device)
 
 	trainD = next(iter(train_loader))
@@ -153,7 +177,6 @@ if __name__ == '__main__':
 	### Training phase
 	if args.mode == 'train':
 		print(f'{color.HEADER}Training {model_name} on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
-		
 		num_epochs = num_epoch
 		e = epoch + 1
 		start = time()
@@ -165,8 +188,7 @@ if __name__ == '__main__':
 		save_model_self(model, model_save_path, optimizer, scheduler, e, accuracy_list)
 		exit()
 
-	train_type = str(noise_type) + '_' + str(noise_level)
-	test_file_path = next((path for path in testfiles if train_type in path), None)
+	test_file_path = next((path for path in testfiles if noise_type in path), None)
 
 	test_np = np.load(test_file_path)
 	test_data = pd.DataFrame(test_np)
@@ -216,22 +238,22 @@ if __name__ == '__main__':
 		) 
 		df[feature_index] = feature_y_pred
 	
-	positive_sum = df.sum(axis=1)
+	# positive_sum = df.sum(axis=1)
 
-	test_file = test_file_path.split('.')[-2].split('/')[-1]
-	print("Test File: ", test_file)
-	test_noise = test_file.split('_')[-2]
-	test_degree = test_file.split('_')[-1]
-	save_path = generate_save_path('/data/processed', 'TranAD', dataset, noise_type, noise_level, test_noise, test_degree)
-	save_path = save_path.replace('energy_saved', 'energy_saved_AutoFS_testonly')
-	print("Save Path: ", save_path)
-	dirs = '/'.join(save_path.split('/')[:-1])
-	if not os.path.exists(dirs):
-		os.makedirs(dirs)
-	pickle.dump(positive_sum, open(save_path, 'wb'))
-	labels_save_path = save_path.split('.')[0] + '_labels.npy'
-	pickle.dump(labelsFinal, open(labels_save_path, 'wb'))
+	# test_file = test_file_path.split('.')[-2].split('/')[-1]
+	# print("Test File: ", test_file)
+	# test_noise = test_file.split('_')[-2]
+	# test_degree = test_file.split('_')[-1]
+	# save_path = generate_save_path('/data/processed', 'TranAD', dataset, noise_type, noise_level, test_noise, test_degree)
+	# save_path = save_path.replace('energy_saved', 'energy_saved_AutoFS_testonly')
+	# print("Save Path: ", save_path)
+	# dirs = '/'.join(save_path.split('/')[:-1])
+	# if not os.path.exists(dirs):
+	# 	os.makedirs(dirs)
+	# pickle.dump(positive_sum, open(save_path, 'wb'))
+	# labels_save_path = save_path.split('.')[0] + '_labels.npy'
+	# pickle.dump(labelsFinal, open(labels_save_path, 'wb'))
 
-	csv_path = save_path.split('.')[0] + '_raw.csv'
-	df.to_csv(csv_path)
-	print("CSV Save Path: ", csv_path)
+	# csv_path = save_path.split('.')[0] + '_raw.csv'
+	# df.to_csv(csv_path)
+	# print("CSV Save Path: ", csv_path)
