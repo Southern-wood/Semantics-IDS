@@ -2,4 +2,5 @@ dataset/*/*.csv
 processed/*
 *__pycache__*
 our/trained_models/*
-logs/*
+DCdetector/checkpoints/*
+*.log

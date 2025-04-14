@@ -44,7 +44,7 @@ run_task() {
     else # Non-pure quality types
         cmd="$cmd_base --level \"$level\"" # None-pure type need a level
          if [[ "$mode" == "train" ]]; then
-             cmd="$cmd --retrain" # Add --retrain for non-pure training
+             cmd="$cmd --retrain" # Add --retrain for training
              log_file="${LOG_DIR}/${dataset}_${quality}_${level}_train.log" # 
              task_desc="Training on ${quality} ${level} ${dataset} dataset"
          else # test mode
