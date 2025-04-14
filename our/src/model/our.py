@@ -5,6 +5,7 @@ import math
 from einops import rearrange
 from ..constants import lr, device
 from .sparse_topk_attention import Saprse_TopM_MHSA
+import numpy as np
 
 torch.manual_seed(1)
 
@@ -74,11 +75,11 @@ class AutoDis(nn.Module):
 
 
 class TranAD_TNT_AutoDIS_SelfAtt_LSTM_ASSA_TOP_M(nn.Module):
-	def __init__(self, feats):
+	def __init__(self, feats, batch_size):
 		super(TranAD_TNT_AutoDIS_SelfAtt_LSTM_ASSA_TOP_M, self).__init__()
 		self.name = 'TranAD_TNT_AutoDIS_SelfAtt_LSTM_ASSA_TOP_M'
 		self.lr = lr
-		self.batch = 128  #128 samples in one training batch
+		self.batch = int(batch_size) 
 		self.n_feats = feats  #The total number of features
 		self.n_window = 10
 		self.input_window = self.n_window - 1
@@ -99,7 +100,7 @@ class TranAD_TNT_AutoDIS_SelfAtt_LSTM_ASSA_TOP_M(nn.Module):
 		#Used for spatial property modeling
 		#The input shape is [self.n_feats,batch_size,self.embedding]
 		# local_encoder_layers = TransformerEncoderLayer(self.embedding, nhead=self.embedding, dim_feedforward=12, dropout=0.1)
-		self.ast = Saprse_TopM_MHSA(self.embedding, (self.input_window, self.n_feats), self.num_heads, self.num_mhsa_layers, self.dim_feedforward, dropout=0.1, top_m=99)
+		self.ast = Saprse_TopM_MHSA(self.embedding, (self.input_window, self.n_feats), self.num_heads, self.num_mhsa_layers, self.dim_feedforward, dropout=0.1, top_m=80)
 		# self.topm_mhsa =  TopM_MHSA(self.embedding, self.num_heads, self.num_mhsa_layers, self.dim_feedforward, dropout=0.1, top_m=99)
 
 		# self.local_transformer_encoder = TransformerEncoder(local_encoder_layers, 1)
@@ -107,7 +108,7 @@ class TranAD_TNT_AutoDIS_SelfAtt_LSTM_ASSA_TOP_M(nn.Module):
 		#Used for temporal property modeling
 		self.init_hidden = (
 				#randn
-        		torch.randn(self.lstm_layers, self.batch, self.embedding * self.n_feats, dtype=torch.float64).to(device)#,
+        	torch.randn(self.lstm_layers, self.batch, self.embedding * self.n_feats, dtype=torch.float64).to(device)#,
 			)
 		
 		self.lstm = nn.GRU(input_size=self.embedding*self.n_feats, hidden_size=self.hidden_dim, num_layers=self.lstm_layers, bidirectional=False)
@@ -190,18 +191,18 @@ class FeatureProxy(torch.nn.Module):
 			super().__init__()
 			self.device = device
 			self.feat_num = feat_num
-			self.tau = 1.0  # beginning temperature
+			self.tau = 2.5  # beginning temperature
 
 			# trainable weights for feature selection
 			self.weights = nn.Parameter(torch.zeros(feat_num, device=device), requires_grad=True)
-			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.001)
+			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.01)
 			
 			# detector
 			self.detector = model.to(device)
 			self.detector_optimizer = optimizer
 			self.detector_scheduler = scheduler
 
-			self.update_freq = 100  # update frequency for feature selection
+			self.update_freq = 5  # update frequency for feature selection
 	
 	def forward(self, window, elem, mode = 'train'):
 			
@@ -210,11 +211,11 @@ class FeatureProxy(torch.nn.Module):
 			elif mode == 'feature_selection':
 					# generate Gumbel-softmax mask
 					logits = torch.stack([self.weights, torch.zeros_like(self.weights)], dim=1)
-					mask = F.gumbel_softmax(logits, tau=self.tau, hard=False, dim=-1)[:, 0]
+					mask = F.gumbel_softmax(logits, tau=self.tau, hard=True, dim=-1)[:, 0]
 			elif mode == 'test':
 					indices = torch.where(self.weights < 0)[0]
-					mask = torch.zeros_like(self.weights, device=self.device)
-					mask[indices] = 1
+					mask = torch.ones_like(self.weights, device=self.device)
+					mask[indices] = 0
 				
 			mask = mask.view(1, 1, -1)  # to match window shape
 
@@ -225,5 +226,48 @@ class FeatureProxy(torch.nn.Module):
 			# forward through the feature proxy
 			return self.detector(masked_window, masked_elem)
 	
-	def update_tau(self, step, decay=0.000005):
-			self.tau = max(0.1, 1 - decay * step)
+	def info(self, updated_index, labelsFinal):
+			updated_index = np.array(updated_index)
+			batch_size = self.detector.batch
+
+			# Convert batch indices to sample indices
+			sample_updated_indices = []
+			for batch_idx in updated_index:
+					# Calculate the starting sample index for this batch
+					start_idx = batch_idx * batch_size
+					# Add all sample indices in this batch
+					# Make sure we don't go beyond the dataset length
+					end_idx = min(start_idx + batch_size, len(labelsFinal))
+					sample_updated_indices.extend(range(start_idx, end_idx))
+
+			sample_updated_indices = np.array(sample_updated_indices)
+
+			# Find indices where labels are anomalies (labelsFinal is True/1)
+			anomaly_indices = np.where(labelsFinal == 1)[0]
+
+			# Mark updates that occurred during anomalous periods as unreliable
+			unreliable_update = np.intersect1d(sample_updated_indices, anomaly_indices)
+
+			selected_indices = np.where(self.weights.cpu() >= 0)[0]
+
+
+			# Count unique batches for reporting (to avoid double counting)
+			unique_updated_batches = len(np.unique(updated_index))
+			print(f"Selected features number: {len(selected_indices)}")
+			print(f"Selected rate: {len(selected_indices) / self.feat_num * 100:.2f}%")
+
+			if len(selected_indices) == self.feat_num:
+				print("\nAll features are selected")
+				print("[This is also expected behavior when the test set comes from the same distribution as the training set, especially on pure.]\n")
+
+			print(f"Total update batches: {unique_updated_batches}")
+			print(f"Samples used for updates: {len(sample_updated_indices)}")
+			print(f"Used samples account for: {len(sample_updated_indices) / len(labelsFinal) * 100:.2f}%")
+			print(f"Unreliable updates (during anomalies): {len(unreliable_update)}")
+			print(f"Reliability rate: {(len(sample_updated_indices) - len(unreliable_update)) / len(sample_updated_indices) * 100:.2f}%")
+			print(f"Dataset original normal rate: {(1 - labelsFinal.mean()) * 100:.2f}%")
+	
+	def update_tau(self, step, decay=0.0005):
+			self.tau = max(0.5, 2.5 - decay * step)
+
+	

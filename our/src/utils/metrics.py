@@ -1,7 +1,7 @@
 import numpy as np
 
 from .spot import SPOT
-from src.constants import lm
+from ..constants import lm
 from sklearn.metrics import roc_auc_score
 
 def calc_point2point(predict, actual):
@@ -153,42 +153,10 @@ def bf_search(score, label, start, end=None, step_num=1, display_freq=1, verbose
     print(m, m_t)
     return m, m_t
 
-def pot_eval_our_set(init_score, score, label, lm, q=1e-5, level=0.02):
-    print(str(lm))
-    print(str(lm))
-    lms = lm[0]
-    while True:
-        try:
-            s = SPOT(q)  # SPOT object
-            s.fit(init_score, score)  # data import
-            s.initialize(level=lms, min_extrema=False, verbose=False)  # initialization step
-        except: lms = lms * 0.999
-        else: break
-    ret = s.run(dynamic=False)  # run
-    # print(len(ret['alarms']))
-    # print(len(ret['thresholds']))
-    pot_th = np.mean(ret['thresholds']) * lm[1]
-    score = np.asarray(score)
-    predict = score > pot_th
-    p_t = calc_point2point(predict, label)
-    # print('POT result: ', p_t, pot_th, p_latency)
-    return {
-        'f1': p_t[0],
-        'precision': p_t[1],
-        'recall': p_t[2],
-        'TP': p_t[3],
-        'TN': p_t[4],
-        'FP': p_t[5],
-        'FN': p_t[6],
-        'ROC/AUC': p_t[7],
-        'threshold': pot_th,
-        # 'pot-latency': p_latency
-    }, np.array(predict)
-
-def pot_eval_our(init_score, score, label, q=1e-5, level=0.02):
+def pot_eval(init_score, score, label, q=1e-5):
     # print(str(lm))
     lms = lm[0]
-    min_lms = 10e-3
+    min_lms = 1e-5
     while True and lms > min_lms:
         try:
             s = SPOT(q)  # SPOT object
@@ -218,7 +186,7 @@ def pot_eval_our(init_score, score, label, q=1e-5, level=0.02):
     # print('POT result: ', p_t, pot_th, p_latency)
     return {
         'f1': p_t[0],
-        'f1_adjust': p_t_adjust[0],
+        'f1_adjusted': p_t_adjust[0],
         'precision': p_t[1],
         'recall': p_t[2],
         'TP': p_t[3],
@@ -229,50 +197,3 @@ def pot_eval_our(init_score, score, label, q=1e-5, level=0.02):
         'threshold': pot_th,
         # 'pot-latency': p_latency
     }, np.array(predict)
-    
-
-def pot_eval(init_score, score, label, q=1e-5, level=0.02):
-    """
-    Run POT method on given score.
-    Args:
-        init_score (np.ndarray): The data to get init threshold.
-            it should be the anomaly score of train set.
-        score (np.ndarray): The data to run POT method.
-            it should be the anomaly score of test set.
-        label:
-        q (float): Detection level (risk)
-        level (float): Probability associated with the initial threshold t
-    Returns:
-        dict: pot result dict
-    """
-    lms = lm[0]
-    while True:
-        try:
-            s = SPOT(q)  # SPOT object
-            s.fit(init_score, score)  # data import
-            s.initialize(level=lms, min_extrema=False, verbose=False)  # initialization step
-        except: lms = lms * 0.999
-        else: break
-    ret = s.run(dynamic=False)  # run
-    # print(len(ret['alarms']))
-    # print(len(ret['thresholds']))
-    pot_th = np.mean(ret['thresholds']) * lm[1]
-    # pot_th = np.percentile(score, 100 * lm[0])
-    # np.percentile(score, 100 * lm[0])
-    pred, p_latency = adjust_predicts(score, label, pot_th, calc_latency=True)
-    # DEBUG - np.save(f'{debug}.npy', np.array(pred))
-    # DEBUG - print(np.argwhere(np.array(pred)))
-    p_t = calc_point2point(pred, label)
-    # print('POT result: ', p_t, pot_th, p_latency)
-    return {
-        'f1': p_t[0],
-        'precision': p_t[1],
-        'recall': p_t[2],
-        'TP': p_t[3],
-        'TN': p_t[4],
-        'FP': p_t[5],
-        'FN': p_t[6],
-        'ROC/AUC': p_t[7],
-        'threshold': pot_th,
-        # 'pot-latency': p_latency
-    }, np.array(pred)

@@ -19,8 +19,13 @@ def get_lowest_memory_gpu():
     free_memory = [(total - used, i) for i, (total, used) in enumerate(gpu_memory)]
     _, best_gpu = max(free_memory)
     if _ < 6000:
-        raise RuntimeError("No free GPU  available")
+        print("Warning: No GPU with sufficient memory available.")
+        return None
     print(f'Best GPU: {best_gpu}')
     return best_gpu
 
-opti_device = torch.device(f'cuda:{get_lowest_memory_gpu()}')
+gpu_id = get_lowest_memory_gpu()
+if gpu_id is not None:
+    opti_device = torch.device(f'cuda:{gpu_id}')
+else:
+    opti_device = torch.device('cpu')

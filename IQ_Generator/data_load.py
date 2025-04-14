@@ -78,7 +78,7 @@ def load_SWaT(dataset_folder):
   ]
   print("SWaT dataset prepared.")
 
-  return attack_pd, normal_pd, labels, categorical_column
+  return normal_pd, attack_pd, labels, categorical_column
 
 
 def load_WADI(dataset_folder):
@@ -92,6 +92,9 @@ def load_WADI(dataset_folder):
   test.dropna(how='all', inplace=True)
   train.fillna(0, inplace=True)
   test.fillna(0, inplace=True)
+
+  test['Time'] = test['Time'].astype(str)
+  test['Time'] = pd.to_datetime(test['Date'] + ' ' + test['Time'], format='%m/%d/%Y %I:%M:%S.%f %p')
 
   # Check the train and test original column names are same, remove the redunant columns
   test_column_names = test.columns.to_list()

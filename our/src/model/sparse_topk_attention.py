@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from timm.models.layers import DropPath,  trunc_normal_
+from timm.layers import DropPath,  trunc_normal_
 from src.constants import device
 
 class LinearProjection(nn.Module):
