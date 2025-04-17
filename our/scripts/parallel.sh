@@ -3,7 +3,7 @@
 # --- Configuration ---
 
 # Maximum number of parallel jobs
-MAX_CONCURRENT=4
+MAX_CONCURRENT=6
 # Delay (in seconds) before starting the *next* job
 INITIAL_START_DELAY=30 # Delay before starting jobs for gpu memory allocation
 # Maximum number of retries for a failed task
@@ -16,7 +16,7 @@ mkdir -p "$LOG_DIR" # make sure the log directory exists
 
 
 quality_type=("pure" "noise" "missing" "duplicate" "delay" "mismatch")
-dataset=("HAI" "SWaT" "WADI")
+dataset=("SWaT" "WADI" "HAI")
 
 
 # --- Helper function to run a single task with retries ---
@@ -54,8 +54,7 @@ run_task() {
     fi
 
     # Add redirection for all cases
-    local full_cmd="$cmd > \"$log_file\" 2>&1"
-
+    local full_cmd="$cmd > \"$log_file\" 2>/dev/null" # Redirect stdout to log file and stderr to /dev/null
     echo "[STARTING] $task_desc (Log: $log_file)"
 
 
@@ -78,23 +77,23 @@ run_task() {
 export -f run_task
 export LOG_DIR MAX_RETRIES RETRY_DELAY
 
-# --- Generate Training Tasks ---
-echo "--- Generating Training Tasks ---"
-train_tasks_args=()
-for i in "${dataset[@]}"; do
-    for j in "${quality_type[@]}"; do
-        if [ "$j" == "pure" ]; then
-            train_tasks_args+=("$i" "pure" "low" "train") # level is unused
-        else
-            train_tasks_args+=("$i" "$j" "low" "train")
-            train_tasks_args+=("$i" "$j" "high" "train")
-        fi
-    done
-done
+# # --- Generate Training Tasks ---
+# echo "--- Generating Training Tasks ---"
+# train_tasks_args=()
+# for i in "${dataset[@]}"; do
+#     for j in "${quality_type[@]}"; do
+#         if [ "$j" == "pure" ]; then
+#             train_tasks_args+=("$i" "pure" "low" "train") # level is unused
+#         else
+#             train_tasks_args+=("$i" "$j" "low" "train")
+#             train_tasks_args+=("$i" "$j" "high" "train")
+#         fi
+#     done
+# done
 
-echo "--- Running Training Tasks (Max Parallel: $MAX_CONCURRENT, Delay: $INITIAL_START_DELAY s) ---"
-printf "%s\n" "${train_tasks_args[@]}" |  paste -d ' ' - - - - | parallel --line-buffer --jobs "$MAX_CONCURRENT" --delay "$INITIAL_START_DELAY" --colsep ' ' run_task {1} {2} {3} {4}
-echo "--- Training Tasks Complete ---"
+# echo "--- Running Training Tasks (Max Parallel: $MAX_CONCURRENT, Delay: $INITIAL_START_DELAY s) ---"
+# printf "%s\n" "${train_tasks_args[@]}" |  paste -d ' ' - - - - | parallel --line-buffer --jobs "$MAX_CONCURRENT" --delay "$INITIAL_START_DELAY" --colsep ' ' run_task {1} {2} {3} {4}
+# echo "--- Training Tasks Complete ---"
 
 # --- Generate Testing Tasks ---
 echo "--- Generating Testing Tasks ---"
