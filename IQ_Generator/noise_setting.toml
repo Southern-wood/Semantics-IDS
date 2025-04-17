@@ -16,12 +16,12 @@ intensity = 0.7
 [[low_quality_types.missing]]
 level = "low"
 feature_ratio = 0.2
-missing_ratio = 0.05
+missing_ratio = 0.1
 
 [[low_quality_types.missing]]
 level = "high"
 feature_ratio = 0.5
-missing_ratio = 0.1
+missing_ratio = 0.2
 
 [[low_quality_types.duplicate]]
 level = "low"

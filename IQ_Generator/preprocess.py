@@ -68,7 +68,14 @@ def mismatch(df, target_columns, relative_frequency):
     df[target_column] = series.values
   return df
 
+def mix_1(df, target_columns_list, intensity, relative_frequency):
+  df = mismatch(df, target_columns_list[0], relative_frequency)
+  df = noise(df, target_columns_list[1], intensity)
+  return df
 
 
-
-
+def mix_2(df, target_columns_list, missing_ratio, duaplicate_ratio, duplicate_length, delaying_length):
+  df = missing(df, target_columns_list[0], missing_ratio)
+  df = duplicate(df, target_columns_list[1], duaplicate_ratio, duplicate_length)
+  df = delay(df, target_columns_list[2], delaying_length)
+  return df
