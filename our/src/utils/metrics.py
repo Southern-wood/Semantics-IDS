@@ -207,3 +207,33 @@ def eval_f1score(score, label):
         fi_score_list.append(f1)
         threholds.append(threhold)
     return fi_score_list, threholds
+
+def eval_f1score_threshold_print(score, label, threshold, verbose=False):
+    f1, precision, recall, accuracy, specificity, auc = 0, 0, 0, 0, 0, 0
+    for i in range(threshold - 1, threshold + 2):
+        prediction = adjust_predicts(score, labelsFinal, i)
+        tmp_f1 = f1_score(label, prediction)
+        if tmp_f1 < f1: continue
+            f1 = tmp_f1
+            precision = precision_score(labelsFinal, pred)
+            recall = recall_score(labelsFinal, pred)
+            accuracy = accuracy_score(labelsFinal, pred)
+            tn, fp, fn, tp = confusion_matrix(labelsFinal, pred).ravel()
+            specificity = tn / (tn + fp)
+
+    # Calculate ROC AUC if possible
+    try:
+      auc = roc_auc_score(labelsFinal, positive_sum)
+    except:
+      auc = float('nan')  # In case of only one class being present
+
+    if verbose:
+        print(f"\n{color.BOLD}Evaluation Metrics with threshold {i}:{color.ENDC}")
+        print(f"Precision: {precision:.4f}")
+        print(f"Recall: {recall:.4f}")
+        print(f"Accuracy: {accuracy:.4f}")
+        print(f"Specificity: {specificity:.4f}")
+        print(f"AUC: {auc:.4f}")
+        print(f"F1 Score: {f1:.4f}")
+
+    return f1

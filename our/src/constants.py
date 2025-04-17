@@ -49,4 +49,13 @@ num_epoch_d = {
 if args.num_epoch is None:
     args.num_epoch = num_epoch_d[args.dataset]
 
+threshold_d = {
+    'SWaT': 7,
+    'WADI': 4,
+    'HAI': 2,
+}
+
+if args.threshold is None:
+    args.threshold = threshold_d[args.dataset]
+
 device = opti_device

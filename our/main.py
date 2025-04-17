@@ -1,18 +1,17 @@
-import pickle
 import os
-import torch
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
+import src.utils.cpu_limits
 from src.constants import device, args, color
 from src.model.our import FeatureProxy
-from src.utils.metrics import pot_eval, adjust_predicts
-from src.utils import *
+from src.utils.metrics import pot_eval, eval_f1score, adjust_predicts, eval_f1score_threshold
 from src.utils.generate_testfiles import *
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import f1_score
+
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pandas as pd
+import numpy as np
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 from time import time
 
 def convert_to_windows(data, model):
@@ -132,7 +131,7 @@ def backprop(enhanced_model, data, optimizer, scheduler, mode='train'):
         update_counter += len(raw_loss)
         # print(f"Update Counter: {update_counter}")
 
-      reliable_threhold = digest.percentile(40)
+      reliable_threhold = digest.percentile(25)
       mean_loss = np.mean(raw_loss)
       if mean_loss < reliable_threhold and update_counter > mini_size: 
         reliable_batch_step += 1
@@ -178,10 +177,9 @@ if __name__ == '__main__':
   model_save_path = args.model_save_path
 
   if quality_type == 'pure':
-    level = ''
-
-
-  file_path = os.path.join(model_save_path, dataset, quality_type + level + '_checkpoint.pth')
+    file_path = os.path.join(model_save_path, dataset, quality_type + '_checkpoint.pth')
+  else:
+    file_path = os.path.join(model_save_path, dataset, quality_type + '_' + level + '_checkpoint.pth')
   file_path = os.path.abspath(file_path)
   print(f"Model file saved at: {file_path}")
   train_file_path, label_file_path = generate_trainpath_and_label('../processed', dataset, quality_type, level)
@@ -260,7 +258,6 @@ if __name__ == '__main__':
     print(f'\n{color.BOLD}Getting loss on Training set for POT {color.ENDC}')
     lossT = backprop(enhanced_model, trainD, optimizer, scheduler, mode='test')
 
-
   indices = torch.where(enhanced_model.weights >= 0)[0]
 
   print(f"\n{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
@@ -270,7 +267,6 @@ if __name__ == '__main__':
 
 
   for feature_index in range(lossT.shape[1]):
-
     if feature_index not in indices:
       continue
 
@@ -279,25 +275,38 @@ if __name__ == '__main__':
 
 		# pot_eval return raw prediction, without point adjustment
     _, feature_y_pred = pot_eval(feature_lossT, feature_loss, labelsFinal)
-    if _ == {}:
-      continue
-    print("cate : " if feature_index in categorical_column else "num : ", feature_index, 
-          " f1 = " , _['f1'], 
-          " precision = ", _['precision'], 
-          " recall = ",_['recall']) 
     df[feature_index] = feature_y_pred
   
   positive_sum = df.sum(axis=1)
 
-  best_f1, best_threshold = 0, 0
-  np.max(positive_sum)
-  for i in range(positive_sum.max() + 1):
-    threshold = i
-    prediction = adjust_predicts(positive_sum, labelsFinal, threshold)
-    f1 = f1_score(labelsFinal, prediction)
-    if f1 > best_f1:
-      best_f1 = f1
-      best_threshold = threshold
-    print(f"Threshold: {threshold}, F1 Score: {f1}")
+  from sklearn.metrics import precision_score, recall_score, accuracy_score, confusion_matrix, roc_auc_score, f1_score
 
-  print(f"Best Threshold: {best_threshold}, Best F1 Score: {best_f1}")
+  # Set verbose to True to see best results evaluate with [threshold - 1, threshold + 1]
+  eval_f1score_threshold(positive_sum, labelsFinal, args.threshold, verbose=False)
+
+  f1s, thresholds = eval_f1score(positive_sum, labelsFinal)
+  indices = np.where(f1s == np.max(f1s))[0]
+
+  f1 = f1s[indices[0]]
+  threshold = thresholds[indices[0]]
+  pred = (positive_sum >= threshold).astype(int)
+
+  precision = precision_score(labelsFinal, pred)
+  recall = recall_score(labelsFinal, pred)
+  accuracy = accuracy_score(labelsFinal, pred)
+  tn, fp, fn, tp = confusion_matrix(labelsFinal, pred).ravel()
+  specificity = tn / (tn + fp)
+
+  # Calculate ROC AUC if possible
+  try:
+    auc = roc_auc_score(labelsFinal, positive_sum)
+  except:
+    auc = float('nan')  # In case of only one class being present
+
+  print(f"\n{color.BOLD}Evaluation Metrics:{color.ENDC}")
+  print(f"Precision: {precision:.4f}")
+  print(f"Recall: {recall:.4f}")
+  print(f"Accuracy: {accuracy:.4f}")
+  print(f"Specificity: {specificity:.4f}")
+  print(f"AUC: {auc:.4f}")
+  print(f"F1 Score: {f1:.4f}")
