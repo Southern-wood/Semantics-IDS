@@ -2,7 +2,7 @@ import numpy as np
 
 from .spot import SPOT
 from ..constants import lm
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score
 
 def calc_point2point(predict, actual):
     """
@@ -197,3 +197,13 @@ def pot_eval(init_score, score, label, q=1e-5):
         'threshold': pot_th,
         # 'pot-latency': p_latency
     }, np.array(predict)
+
+def eval_f1score(score, label):
+    fi_score_list = []
+    threholds = []
+    for threhold in range(score.max()):
+        predict = adjust_predicts(score, label, threhold)
+        f1 = f1_score(label, predict)
+        fi_score_list.append(f1)
+        threholds.append(threhold)
+    return fi_score_list, threholds
