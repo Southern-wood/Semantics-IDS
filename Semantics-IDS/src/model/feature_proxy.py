@@ -17,7 +17,7 @@ class FeatureProxy(torch.nn.Module):
 			self.weights_optimizer = torch.optim.Adam([self.weights], lr=1e-5)
 			
 			# detector
-			self.detector = model.to(device).double()
+			self.detector = model.to(device)
 			self.detector_optimizer = optimizer
 			self.detector_scheduler = scheduler
 
@@ -80,8 +80,8 @@ class FeatureProxy(torch.nn.Module):
 				window = window[:-1, :, :]
 				elem = window[-1, :, :].view(1, d.shape[0], d.shape[2])
 				
-				window = window.to(self.device).double()
-				elem = elem.to(self.device).double()
+				window = window.to(self.device)
+				elem = elem.to(self.device)
 				
 				# Calculate the loss for each sample
 				raw_z = self(window, mode='train') # Set train mode to get the raw output

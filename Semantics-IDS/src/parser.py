@@ -5,7 +5,6 @@ parser.add_argument('--dataset', type=str, default='SWaT', choices=['SWaT', 'WAD
 parser.add_argument('--quality_type', type=str, default='pure')
 parser.add_argument('--level', type=str, default='low', choices=['low', 'high'])
 parser.add_argument('--mode', type=str, default='test', choices=['train', 'test'])
-parser.add_argument('--retrain', action='store_true', help='retrain the model')
 
 # Default values for the dataset, set in the constants.py file
 parser.add_argument('--data_path', type=str, default='../processed', help='path to the dataset')
@@ -17,7 +16,6 @@ parser.add_argument('--feature_selection_batch_size', type=int, default=None, he
 parser.add_argument('--feature_selection_num_epoch', type=int, default=None, help='number of epochs for feature selection')
 parser.add_argument('--minimum_selected_features', type=float, default=None, help='minimum selected features for feature selection')
 parser.add_argument('--relability_rate', type=int, default=None, help='feature selection reliability rate')
-parser.add_argument('--cross_level', action='store_true', help='cross level training and testing')
 parser.add_argument('--target_test_data', type=str, default=None, help='If set, the model will be tested on this dataset')
 
 # Resource allocation

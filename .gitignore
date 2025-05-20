@@ -8,12 +8,11 @@ HDMixer/
 MAAT/
 AR/
 CNN_AE/
-Anomaly-Transformer/
 PASAD/
 SFIG/
 USAD/
+Anomaly-Transformer/
 DCdetector/
 */logs/*
-*/scripts/*
 results.md
 static.md

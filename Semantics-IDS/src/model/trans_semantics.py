@@ -62,7 +62,7 @@ class AutoDis(nn.Module):
 		self.w2 = nn.Linear(self.buck_size,self.buck_size)
 		self.sf = nn.Softmax(dim=-1)
 		self.meta_embeddings = nn.EmbeddingBag(self.buck_size,self.embedding_dim,mode='sum')
-		self.register_buffer('index_tensor', torch.arange(0, self.buck_size, dtype=torch.int64))
+		self.register_buffer('index_tensor', torch.arange(0, self.buck_size))
 		self.control_factor = 0.5
 		self.temperature = 1e-5
 	
@@ -84,15 +84,15 @@ class Trans_Semantics(nn.Module):
 		self.lr = lr
 		self.batch = int(batch_size) 
 		self.n_feats = feats  #The total number of features
-		self.n_window = 15
+		self.n_window = 10
 		self.input_window = self.n_window - 1
 		self.bucket_size = 6
 		self.embedding = 6  #Each numerical and categorical features same embedding size
 		self.num_heads = 3
-		self.num_mhsa_layers = 1
+		self.num_mhsa_layers = 3
 		self.dim_feedforward = 12
 		self.hidden_dim = self.n_feats * self.embedding
-		self.gru_layers = 1
+		self.gru_layers = 3
 		
 	
 		#Used for feature value embedding
@@ -107,7 +107,7 @@ class Trans_Semantics(nn.Module):
 		# self.local_transformer_encoder = TransformerEncoder(local_encoder_layers, 1)
 		
 		#Used for temporal property modeling
-		self.register_buffer('init_h', torch.randn(self.gru_layers, self.batch, self.embedding * self.n_feats, dtype=torch.float64)) 
+		self.register_buffer('init_h', torch.randn(self.gru_layers, self.batch, self.embedding * self.n_feats)) 
         
 		
 		self.gru = nn.GRU(input_size=self.embedding*self.n_feats, hidden_size=self.hidden_dim, num_layers=self.gru_layers, bidirectional=False)

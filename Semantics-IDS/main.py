@@ -63,8 +63,8 @@ def train_step(enhanced_model, data_loader):
     window = window[:-1, :, :]
     elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
     
-    window = window.to(device, dtype=torch.float64)
-    elem = elem.to(device, dtype=torch.float64)
+    window = window.to(device)
+    elem = elem.to(device)
     
     z = enhanced_model(window)
     loss = MSELoss(z, elem)
@@ -96,8 +96,8 @@ def inference(enhanced_model, data_loader):
     elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
 
     
-    window = window.to(device, dtype=torch.float64)
-    elem = elem.to(device, dtype=torch.float64)
+    window = window.to(device)
+    elem = elem.to(device)
     
     z = enhanced_model(window, 'test')
     loss = MSELoss(z, elem)[0]
@@ -127,7 +127,6 @@ if __name__ == '__main__':
   model, optimizer, scheduler, epoch, accuracy_list = load_model(feat_num, batch_size, model_save_path)
   enhanced_model = FeatureProxy(model, optimizer, scheduler, feat_num, 
                                 args.feature_selection_batch_size, args.relability_rate, args.minimum_selected_features, device)
-  enhanced_model = enhanced_model.to(dtype=torch.float64)
 
   if args.mode == 'train':
     print(f'{color.HEADER}Training Trans-Semantics on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
@@ -145,7 +144,7 @@ if __name__ == '__main__':
       print(f'\n{color.BOLD}Epoch {e} training of total {num_epochs} epochs{color.ENDC}')
       lossT, lr = train_step(enhanced_model, data_loader=train_loader)
       accuracy_list.append((lossT, lr))
-    print(color.BOLD + 'Training time: ' + "{:10.4f}".format(time() - start) + ' s' + color.ENDC)
+      print(color.BOLD + 'Training time: ' + "{:10.4f}".format(time() - start) + ' s' + color.ENDC)
     save_model(model, model_save_path, optimizer, scheduler, e, accuracy_list)
     exit()
 
