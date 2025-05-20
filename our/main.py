@@ -1,295 +1,220 @@
-import os
-import src.utils.cpu_limits
-from src.constants import device, args, color
-from src.model.our import FeatureProxy
-from src.utils.metrics import pot_eval, eval_f1score, adjust_predicts, eval_f1score_threshold
-from src.utils.generate_testfiles import *
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import pandas as pd
 import numpy as np
-from torch.utils.data import DataLoader, TensorDataset
+import os 
 from tqdm import tqdm
 from time import time
 
-def convert_to_windows(data, model):
-  windows = []
-  w_size = model.n_window
-  print(data.shape)
-  for i, g in enumerate(data): 
-    if i >= w_size:
-      w = data[i - w_size + 1 : i + 1]
-    # This may lead to inaccurate window data
-    else:
-      w = torch.cat([data[0].repeat(w_size - i - 1, 1), data[0 : i + 1]])
-    windows.append(w)
-  return torch.stack(windows)
+from src.model.trans_semantics import Trans_Semantics
+from src.model.feature_proxy import FeatureProxy
+from src.constants import args, color
 
-def convert_labels_to_windows(labels, w_size):
-  windowed_labels = []
-  n = len(labels)
-  for i in range(n):
-    if i >= w_size -1 : 
-        window_slice = labels[i - w_size + 1 : i + 1]
-    else:
-        window_slice = labels[0 : i + 1]
+from src.utils.resources_controll import set_cpu_limits, get_optimal_device
+from src.utils.data_loader import get_loader_segment
+from src.utils.metrics import pot_eval, eval_f1score, adjust_predicts
+from src.utils.path_handle import dataset_path, model_path
 
-    # Label is 1 if any label in the slice is 1
-    windowed_labels.append(np.max(window_slice)) # np.max works for 0/1 labels
-  return np.array(windowed_labels)
 
-def save_model_self(model, model_save_path, optimizer, scheduler, epoch, accuracy_list):    
-  if not os.path.exists(model_save_path):
-    os.makedirs(model_save_path)
-  if not os.path.exists(os.path.join(model_save_path, str(args.dataset))):
-    os.makedirs(os.path.join(model_save_path, str(args.dataset)))
+def save_model(model, model_save_path, optimizer, scheduler, epoch, accuracy_list):   
+  model_dir = os.path.dirname(model_save_path)
+  if not os.path.exists(model_dir):
+    os.makedirs(model_dir)
+  
   torch.save({
     'epoch': epoch,
     'model_state_dict': model.state_dict(),
     'optimizer_state_dict': optimizer.state_dict(),
     'scheduler_state_dict': scheduler.state_dict(),
-    'accuracy_list': accuracy_list}, file_path)
+    'accuracy_list': accuracy_list}, model_save_path)
 
 
-def load_model(modelname, dims, batch_size, file_path):
-  import src.model.our
-  model_class = getattr(src.model.our, modelname)
-  model = model_class(dims, batch_size).double()
+def load_model(dims, batch_size, model_save_path):
+  model = Trans_Semantics(dims, batch_size)
   model = model.to(device)
   optimizer = torch.optim.AdamW(model.parameters(), lr=model.lr, weight_decay=1e-5)
-  scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 5, 0.9)
-  if os.path.exists(file_path) and args.mode == 'test':
+  scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=100, T_mult=2, eta_min=1e-6)
+  if os.path.exists(model_save_path) and args.mode == 'test':
     print(f"{color.GREEN}Loading pre-trained model: {model.name}{color.ENDC}")
-    checkpoint = torch.load(file_path, weights_only=False)
+    checkpoint = torch.load(model_save_path, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     epoch = checkpoint['epoch']
     accuracy_list = checkpoint['accuracy_list']
-    print("Current Model Trained Epoch:" + str(epoch))
+    print("Current Model Trained Epoch:" + str(epoch + 1))
   elif args.mode == 'train':
     print(f"{color.GREEN}Creating new model: {model.name}{color.ENDC}")
     epoch = -1
     accuracy_list = []
   else:
-    print(f"{color.RED}Model not found: {file_path}{color.ENDC}")
+    print(f"{color.RED}Model not found: {model_save_path}{color.ENDC}")
     exit()
   return model, optimizer, scheduler, epoch, accuracy_list
 
 
-def backprop(enhanced_model, data, optimizer, scheduler, mode='train'):
+def train_step(enhanced_model, data_loader):
   MSELoss = nn.MSELoss(reduction='none')
-  dataset = TensorDataset(data, data)
-  dataloader = DataLoader(dataset, batch_size=enhanced_model.detector.batch)
-
-  update_freq = enhanced_model.update_freq
   total_loss = 0
   global_step = 0
-
-  loss_list = []
   
-  # Precompute empty array for faster percentile calculations
-  if mode == 'feature_selection':
-    from tdigest import TDigest
-    digest = TDigest()
-    update_counter = 0
-    reliable_batch_step = 0
-    mini_size = 0.1 * len(dataloader.dataset)
-    updated_index = [] # to store updated indices
-
-  for d, _ in tqdm(dataloader):
-    window = d.permute(1, 0, 2)
-    elem = window[-1, :, :].view(1, d.shape[0], data.shape[2])
-
-    # window: time_step/window, batch_size, features
-    # element: the last window of all data: 1, batch_size, features
-    window = window.to(device)
-    elem = elem.to(device)
-    z = enhanced_model(window, elem, mode)
-
-    # calculate the loss
-    loss = MSELoss(z, elem)
-    total_loss += loss.sum().item()
-
-    if mode == 'train':
-      enhanced_model.detector_optimizer.zero_grad()
-      loss.mean().backward()
-      enhanced_model.detector_optimizer.step()
-
-    elif mode == 'feature_selection':
-      # Update the TDigest with Raw loss（without feature selection)
-      with torch.no_grad():
-        raw_z = enhanced_model(window, elem, mode='train')
-        raw_loss = MSELoss(raw_z, elem)
-        raw_loss = raw_loss.detach().cpu().numpy()
-        raw_loss = raw_loss.sum(axis=2)
-        raw_loss = raw_loss.reshape(-1)
-        for i in range(raw_loss.shape[0]):
-          digest.update(raw_loss[i])
-        update_counter += len(raw_loss)
-        # print(f"Update Counter: {update_counter}")
-
-      reliable_threhold = digest.percentile(25)
-      mean_loss = np.mean(raw_loss)
-      if mean_loss < reliable_threhold and update_counter > mini_size: 
-        reliable_batch_step += 1
-      else:
-        continue
-      
-      selector_update = (reliable_batch_step % update_freq) == (update_freq - 1)
-      # Only calculate percentile and update if we have enough history
-      if selector_update:
-        enhanced_model.weights_optimizer.zero_grad()
-        loss.mean().backward()
-        enhanced_model.update_tau(global_step)
-        enhanced_model.weights_optimizer.step()
-        updated_index.append(global_step)
-        # print("Updated index: ", global_step)
+  for i, data in enumerate(tqdm(data_loader)):
+    window = data.permute(1, 0, 2)
+    window = window[:-1, :, :]
+    elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
     
-      loss = loss[0]
-      loss_list.append(loss.detach().cpu())
-    elif mode == 'test':
-      loss = loss[0]
-      loss_list.append(loss.detach().cpu())
-
+    window = window.to(device, dtype=torch.float64)
+    elem = elem.to(device, dtype=torch.float64)
+    
+    z = enhanced_model(window)
+    loss = MSELoss(z, elem)
+    total_loss += loss.sum().item() / data.shape[0]
+    
+    enhanced_model.detector_optimizer.zero_grad()
+    loss.mean().backward()
+    enhanced_model.detector_optimizer.step()
     global_step += 1
   
-  if mode == 'train':
-    scheduler.step()
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss, optimizer.param_groups[0]['lr']
-  elif mode == 'feature_selection':
-    return updated_index
-  elif mode == 'test':
-    loss_list = torch.cat(loss_list, 0)
-    return loss_list.detach().numpy()
+    # use in-epoch learning rate scheduler since datasets is too big
+    enhanced_model.detector_scheduler.step()
+  avg_loss = total_loss / (len(data_loader) * data.shape[2])
+  return avg_loss, optimizer.param_groups[0]['lr']
+
+
+def inference(enhanced_model, data_loader):
+  MSELoss = nn.MSELoss(reduction='none')
+  loss_list = []
+  
+  for i, batch_data in enumerate(tqdm(data_loader)):
+    if len(batch_data) == 2:
+      data, _ = batch_data  
+    else:
+      data = batch_data
+    # print(f"Batch data shape: {data.shape}")
+    window = data.permute(1, 0, 2)
+    window = window[:-1, :, :]
+    elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
+
+    
+    window = window.to(device, dtype=torch.float64)
+    elem = elem.to(device, dtype=torch.float64)
+    
+    z = enhanced_model(window, 'test')
+    loss = MSELoss(z, elem)[0]
+    loss_list.append(loss.detach().cpu())
+  
+  loss_list = torch.cat(loss_list, 0)
+  return loss_list.detach().numpy()
 
 if __name__ == '__main__':
-  model_name = "TranAD_TNT_AutoDIS_SelfAtt_LSTM_ASSA_TOP_M"
+  # Set resource limits
+  set_cpu_limits(args.cpu_limit)
+  global device
+  device = get_optimal_device() if args.gpu == 'auto' else torch.device(args.gpu)
 
   dataset = args.dataset
   quality_type = args.quality_type
   level = args.level
+  feat_num = args.feat_num
   num_epoch = args.num_epoch
   batch_size = args.batch_size
   model_save_path = args.model_save_path
+  prefix = args.data_path
+  model_save_path = os.path.abspath(model_path(model_save_path, dataset, quality_type, level))
 
-  if quality_type == 'pure':
-    file_path = os.path.join(model_save_path, dataset, quality_type + '_checkpoint.pth')
-  else:
-    file_path = os.path.join(model_save_path, dataset, quality_type + '_' + level + '_checkpoint.pth')
-  file_path = os.path.abspath(file_path)
-  print(f"Model file saved at: {file_path}")
-  train_file_path, label_file_path = generate_trainpath_and_label('../processed', dataset, quality_type, level)
-  testfiles = generate_testfiles('../processed', dataset)
+  print(f"Model file path: {model_save_path}")
 
-  train_np = np.load(train_file_path)
-  train_data = pd.DataFrame(train_np)
+  model, optimizer, scheduler, epoch, accuracy_list = load_model(feat_num, batch_size, model_save_path)
+  enhanced_model = FeatureProxy(model, optimizer, scheduler, feat_num, 
+                                args.feature_selection_batch_size, args.relability_rate, args.minimum_selected_features, device)
+  enhanced_model = enhanced_model.to(dtype=torch.float64)
 
-  categorical_column = []
-  for entry in train_data.columns:
-    if all(np.isclose(round(train_data[entry]), train_data[entry])):
-      categorical_column.append(entry)
-
-  train_loader = DataLoader(train_np, batch_size=train_np.shape[0])
-  feature_num = train_data.shape[1]
-
-
-  model, optimizer, scheduler, epoch, accuracy_list = load_model(model_name, feature_num, batch_size, file_path)
-  enhanced_model = FeatureProxy(model, optimizer, scheduler, feature_num, device)
-
-  trainD = next(iter(train_loader))
-  trainD = convert_to_windows(trainD, model)
-
-  ### Training phase
   if args.mode == 'train':
-    print(f'{color.HEADER}Training {model_name} on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
-    # enhanced_model.detector.train()
+    print(f'{color.HEADER}Training Trans-Semantics on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
+    enhanced_model.detector.train()
     num_epochs = num_epoch
     e = epoch + 1
     start = time()
+
+    # build train_loader
+    train_path = dataset_path(prefix, dataset, quality_type, level, 'train')
+    print(f"Train path: {train_path}")
+    train_loader = get_loader_segment(mode='train', normal_path=train_path, batch_size=batch_size, win_size=model.n_window)
+
     for e in list(range(epoch + 1, epoch + num_epochs + 1)):
       print(f'\n{color.BOLD}Epoch {e} training of total {num_epochs} epochs{color.ENDC}')
-      lossT, lr = backprop(enhanced_model, trainD, optimizer, scheduler, mode='train')
+      lossT, lr = train_step(enhanced_model, data_loader=train_loader)
       accuracy_list.append((lossT, lr))
     print(color.BOLD + 'Training time: ' + "{:10.4f}".format(time() - start) + ' s' + color.ENDC)
-    save_model_self(model, model_save_path, optimizer, scheduler, e, accuracy_list)
+    save_model(model, model_save_path, optimizer, scheduler, e, accuracy_list)
     exit()
 
-  if quality_type == 'pure':
-    test_file_path = next((path for path in testfiles if quality_type in path), None)
-  else:
-    test_file_path = next((path for path in testfiles if quality_type + '_' + level in path), None)
-  print(f"Test file path: {test_file_path}")
-  test_np = np.load(test_file_path)
-  test_data = pd.DataFrame(test_np)
-  labels = np.load(label_file_path)
-  test_loader = DataLoader(test_np, batch_size=test_np.shape[0])
+  train_path = dataset_path(prefix, dataset, quality_type, level, 'train')
+  test_path, label_path = dataset_path(prefix, dataset, quality_type, level, 'test')
+  val_path = dataset_path(prefix, dataset, quality_type, level, 'val')
 
-  testD = next(iter(test_loader))
-  testD = convert_to_windows(testD, model)
+  # build dataloaders
+  train_loader = get_loader_segment(mode='train', noshuffle=True, normal_path=train_path, batch_size=batch_size, win_size=model.n_window)
+  val_loader = get_loader_segment(mode='val', normal_path=train_path, validation_path=val_path, batch_size=args.feature_selection_batch_size, win_size=model.n_window)  
+  test_loader = get_loader_segment(mode='test', normal_path=train_path, attack_path=test_path, labels_path=label_path, batch_size=batch_size, win_size=model.n_window)
+
+  # Extract labels from the label_loader 
+  labelsFinal = []
+  for _, label in test_loader:
+      labelsFinal.extend(label.cpu().numpy())
+  labelsFinal = np.array(labelsFinal, dtype=int)
+  
+  print("anomaly rate: ", np.sum(labelsFinal) / len(labelsFinal))
 
   enhanced_model.train()
+  enhanced_model.weights.data = torch.zeros(feat_num, device=device)
 
-  enhanced_model.weights.data = torch.zeros(feature_num, device=device)
-
-  ### Testing phase
-  labelsFinal = (np.sum(labels, axis=1) >= 1) + 0
-  labelsFinal = convert_labels_to_windows(labelsFinal, model.n_window)
-  print(f'\n{color.BOLD}Labels shape: {labelsFinal.shape}{color.ENDC}')
-  print("anomaly rate: ", labelsFinal.mean())
-
-  # Convert labels to windows
-  print(f'{color.HEADER}Testing {model_name} on {args.dataset}{color.ENDC}')
-  print(f'\n{color.BOLD}Auto Feature Selection on {test_file_path} {color.ENDC}')
-  updated_index = backprop(enhanced_model, testD, optimizer, scheduler, mode='feature_selection')
-
-  ### Print feature selection info: how many updates are reliable 
-  print(f"\n{color.BOLD}Feature Selection Info{color.ENDC}")
-  enhanced_model.info(updated_index, labelsFinal)
+  print(f'{color.HEADER}Adopting Trans-Semantics on {args.dataset}{color.ENDC}')
+  print(f'\n{color.BOLD}Auto Feature Selection on {val_path} {color.ENDC}')
+  
+  for i in range(args.feature_selection_num_epoch):
+    reliable_time_indices = enhanced_model.feature_selection(val_loader)
+  
+  indices = enhanced_model.selected_features()
+  print(f"\n{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
 
   enhanced_model.eval()
 
   with torch.no_grad():
-    print(f'\n{color.BOLD}Evaluating on {test_file_path} {color.ENDC}')
-    loss = backprop(enhanced_model, testD, optimizer, scheduler, mode='test')
+    print(f'\n{color.BOLD}Evaluating on {test_path} {color.ENDC}')
+    loss = inference(enhanced_model, data_loader=test_loader)
     print(f'\n{color.BOLD}Getting loss on Training set for POT {color.ENDC}')
-    lossT = backprop(enhanced_model, trainD, optimizer, scheduler, mode='test')
+    lossT = inference(enhanced_model, data_loader=train_loader)
 
-  indices = torch.where(enhanced_model.weights >= 0)[0]
+  indices = enhanced_model.selected_features()
 
-  print(f"\n{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
-  print(f"\n{color.BOLD}POT for Selected Features")
+  print(f"\n{color.BOLD}POT for Selected Features") 
 
   df = pd.DataFrame()
-
-
-  for feature_index in range(lossT.shape[1]):
+  for feature_index in tqdm(range(lossT.shape[1])):
     if feature_index not in indices:
       continue
-
+      
     feature_lossT = lossT[:, feature_index]
     feature_loss = loss[:, feature_index]
 
 		# pot_eval return raw prediction, without point adjustment
     _, feature_y_pred = pot_eval(feature_lossT, feature_loss, labelsFinal)
+    prediction_rate = np.sum(feature_y_pred) / len(feature_y_pred)
+    if prediction_rate > 0.5: # if the prediction rate makes no sense, we just skip this feature
+      continue
     df[feature_index] = feature_y_pred
   
   positive_sum = df.sum(axis=1)
 
   from sklearn.metrics import precision_score, recall_score, accuracy_score, confusion_matrix, roc_auc_score, f1_score
 
-  # Set verbose to True to see best results evaluate with [threshold - 1, threshold + 1]
-  eval_f1score_threshold(positive_sum, labelsFinal, args.threshold, verbose=False)
-
   f1s, thresholds = eval_f1score(positive_sum, labelsFinal)
   indices = np.where(f1s == np.max(f1s))[0]
 
   f1 = f1s[indices[0]]
   threshold = thresholds[indices[0]]
-  pred = (positive_sum >= threshold).astype(int)
+  pred = adjust_predicts(positive_sum, labelsFinal, threshold)
 
   precision = precision_score(labelsFinal, pred)
   recall = recall_score(labelsFinal, pred)
