@@ -1,56 +1,81 @@
 data_folder = "../dataset/"
 output_folder = "../processed/"
 
-[low_quality_types.pure]
+# first 10% of the data will be used for validation
+validate = true
+validation_ratio = 0.1
 
-[[low_quality_types.noise]]
-level = "low"
+# common noise types
+[noise_types.pure]
+[noise_types.noise]
+[noise_types.missing]
+[noise_types.duplicate]
+[noise_types.delay]
+
+# the following parameters are used to generate noise
+[noise_types.noise.low]
 feature_ratio = 0.5
 intensity = 0.3
 
-[[low_quality_types.noise]]
-level = "high"
+[noise_types.noise.high]
 feature_ratio = 0.8
 intensity = 0.7
 
-[[low_quality_types.missing]]
-level = "low"
+[noise_types.missing.low]
 feature_ratio = 0.2
 missing_ratio = 0.1
 
-[[low_quality_types.missing]]
-level = "high"
+[noise_types.missing.high]
 feature_ratio = 0.5
 missing_ratio = 0.2
 
-[[low_quality_types.duplicate]]
-level = "low"
+[noise_types.duplicate.low]
 feature_ratio = 0.2
 duplicate_ratio = 0.03
 duplicate_length = 15
 
-[[low_quality_types.duplicate]]
-level = "high"
+[noise_types.duplicate.high]
 feature_ratio = 0.5
 duplicate_ratio = 0.08
 duplicate_length = 50
 
-[[low_quality_types.delay]]
-level = "low"
+[noise_types.delay.low]
 feature_ratio = 0.2
 delay_length = 100
 
-[[low_quality_types.delay]]
-level = "high"
+[noise_types.delay.high]
 feature_ratio = 0.4
 delay_length = 200
 
-[[low_quality_types.mismatch]]
-level = "low"
-feature_ratio = 0.2
-relative_frequency = 50
+[noise_types.mix_1]
+types = ['noise', 'missing']
 
-[[low_quality_types.mismatch]]
-level = "high"
-feature_ratio = 0.6
-relative_frequency = 100
+[noise_types.mix_2]
+types = ['noise', 'duplicate']
+
+[noise_types.mix_3]
+types = ['noise', 'delay']
+
+[noise_types.mix_4]
+types = ['missing', 'duplicate']
+
+[noise_types.mix_5]
+types = ['missing', 'delay']
+
+[noise_types.mix_6]
+types = ['duplicate', 'delay']
+
+[noise_types.mix_7]
+types = ['noise', 'missing', 'duplicate']
+
+[noise_types.mix_8]
+types = ['noise', 'missing', 'delay']
+
+[noise_types.mix_9]
+types = ['noise', 'duplicate', 'delay']
+
+[noise_types.mix_10]
+types = ['missing', 'duplicate', 'delay']
+
+[noise_types.mix_all]
+types = ['noise', 'missing', 'duplicate', 'delay']

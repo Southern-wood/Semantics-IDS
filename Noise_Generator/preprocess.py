@@ -3,6 +3,7 @@ import pandas as pd
 import random
 
 def noise(df, target_columns, intensity):
+  df = df.copy() 
   for target_column in target_columns:
     column_data = df[target_column].values
     deviation = np.std(column_data) * intensity
@@ -12,6 +13,7 @@ def noise(df, target_columns, intensity):
 
 
 def missing(df, target_columns, missing_ratio):
+  df = df.copy()
   for target_column in target_columns:
     col_idx = df.columns.get_loc(target_column)
     row_idxs = list(range(df.shape[0]))
@@ -21,6 +23,7 @@ def missing(df, target_columns, missing_ratio):
 
 
 def duplicate(df, target_columns, duplicate_ratio, duplicate_length):
+  df = df.copy()
   num_rows = df.shape[0]
   possible_start_indices = np.arange(num_rows)
   num_duplicates = int(num_rows * duplicate_ratio)
@@ -45,6 +48,7 @@ def duplicate(df, target_columns, duplicate_ratio, duplicate_length):
 
 
 def delay(df, target_columns, delaying_length):
+  df = df.copy()
   for target_column in target_columns:
     # Each column gets a random slide step less than the given slide_step threshold
     current_slide = random.randint(1, delaying_length)
@@ -52,30 +56,3 @@ def delay(df, target_columns, delaying_length):
     df.iloc[current_slide:, col_idx] = df.iloc[:-current_slide, col_idx].values
   return df
 
-
-def mismatch(df, target_columns, relative_frequency):
-  for target_column in target_columns:
-    # Each column gets a random relative frequency
-    column_data = df[target_column].values
-    step = random.randint(2, relative_frequency)
-
-    # Create a new array with NaN values
-    sampled_data = np.full_like(column_data, np.nan, dtype=np.float64) 
-    sampled_data[::step] = column_data[::step]
-
-    series = pd.Series(sampled_data)
-    series = series.ffill().bfill()  # Forward and backward fill to handle NaN values
-    df[target_column] = series.values
-  return df
-
-def mix_1(df, target_columns_list, intensity, relative_frequency):
-  df = mismatch(df, target_columns_list[0], relative_frequency)
-  df = noise(df, target_columns_list[1], intensity)
-  return df
-
-
-def mix_2(df, target_columns_list, missing_ratio, duaplicate_ratio, duplicate_length, delaying_length):
-  df = missing(df, target_columns_list[0], missing_ratio)
-  df = duplicate(df, target_columns_list[1], duaplicate_ratio, duplicate_length)
-  df = delay(df, target_columns_list[2], delaying_length)
-  return df
