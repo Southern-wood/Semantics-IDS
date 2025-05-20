@@ -1,0 +1,7 @@
+{
+  "single": ["noise", "missing", "duplicate", "delay"],
+  "mix": ["mix_1", "mix_2", "mix_3", "mix_4", "mix_5",
+          "mix_6", "mix_7", "mix_8", "mix_9", "mix_10",
+          "mix_all"
+  ]
+}
