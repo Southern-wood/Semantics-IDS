@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 
 from timm.layers import DropPath,  trunc_normal_
-from src.constants import device
 
 class LinearProjection(nn.Module):
     def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0., bias=True):
@@ -27,10 +26,10 @@ class LinearProjection(nn.Module):
         k, v = kv[0], kv[1] 
         return q,k,v
 
-class Saprse_TopM_MHSA(nn.Module):
+class TopM_MHSA(nn.Module):
     def __init__(self, embed_dim, win_size, num_heads, num_mhsa_layers, dim_feedforward, dropout, top_m):
         super().__init__()
-        self.nets = nn.ModuleList([Saprse_TopM_MHSA_Block(embed_dim, win_size, num_heads, dim_feedforward, dropout, top_m) for _ in range(num_mhsa_layers)])
+        self.nets = nn.ModuleList([TopM_MHSA_Block(embed_dim, win_size, num_heads, dim_feedforward, dropout, top_m) for _ in range(num_mhsa_layers)])
 
     def forward(self, x):
         output = x
@@ -38,7 +37,7 @@ class Saprse_TopM_MHSA(nn.Module):
             output = layer(output)
         return output
     
-class Saprse_TopM_MHSA_Block(nn.Module):
+class TopM_MHSA_Block(nn.Module):
     def __init__(self, embed_dim, win_size, nhead, dim_feedforward, dropout, top_m):
         super().__init__()
         drop_path_rate = 0.1
@@ -83,7 +82,7 @@ class Attention_Sparse_Top_M(nn.Module):
         self.softmax= nn.Softmax(dim=-1)
 
         self.relu = nn.ReLU()
-        self.w = nn.Parameter(torch.ones(3)) 
+        self.w = nn.Parameter(torch.ones(2)) 
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -113,14 +112,16 @@ class Attention_Sparse_Top_M(nn.Module):
         attn_topk = torch.where(mask>0, raw_attn, torch.full_like(raw_attn, float('-inf')))
         attn_topk = self.softmax(attn_topk)
         
-        attn_sprase = self.relu(raw_attn) ** 2
+        # attn_sprase = self.relu(raw_attn) ** 2
         
         w0 = torch.exp(self.w[0]) / torch.sum(torch.exp(self.w))
         w1 = torch.exp(self.w[1]) / torch.sum(torch.exp(self.w))
-        w2 = torch.exp(self.w[2]) / torch.sum(torch.exp(self.w))
+        # w2 = torch.exp(self.w[2]) / torch.sum(torch.exp(self.w))
         # print("w1: ", w1, "w2: ", w2)
-        attn = w0 * attn + w1 * attn_topk + w2 * attn_sprase
+        # attn = w0 * attn + w1 * attn_topk + w2 * attn_sprase
+        attn = w0 * attn + w1 * attn_topk
         attn = self.attn_drop(attn)
+        # attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
         x = self.proj_drop(x) 

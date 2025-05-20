@@ -1,61 +1,87 @@
 from src.parser import args
-from src.utils.free_gpu import opti_device
+import os
 
-class color:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    GREEN = '\033[92m'
-    RED = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+# If TQDM_DISABLE environment variable is set, disable colors
+if os.environ.get('TQDM_DISABLE'):
+    class color:
+        HEADER = ''
+        BLUE = ''
+        GREEN = ''
+        RED = ''
+        FAIL = ''
+        ENDC = ''
+        BOLD = ''
+        UNDERLINE = ''
+else:
+    # Keep the original color class definition
+    class color:
+        HEADER = '\033[95m'
+        BLUE = '\033[94m'
+        GREEN = '\033[92m'
+        RED = '\033[93m'
+        FAIL = '\033[91m'
+        ENDC = '\033[0m'
+        BOLD = '\033[1m'
+        UNDERLINE = '\033[4m'
 
-
-# Threshold parameters for spot
-lm_d = {
-	'SWaT': (0.993, 1),
-	'WADI': (0.999, 1),
-    'HAI': (0.99995, 1.06),
+# Reorganize hyperparameters by dataset
+dataset_config = {
+    'SWaT': {
+        'feat_num': 46,
+        'lm': (0.993, 1),
+        'lr': 0.01,
+        'batch_size': 256,
+        'num_epoch': 3,
+        'feature_selection_batch_size': 128,
+        'feature_selection_num_epoch': 3,
+        'minimum_selected_features': 0.90,
+        'relability_rate': 35,
+    },
+    'WADI': {
+        'feat_num': 98,
+        'lm': (0.999, 1),
+        'lr': 0.001,
+        'batch_size': 64,
+        'num_epoch': 1,
+        'feature_selection_batch_size': 32,
+        'feature_selection_num_epoch': 3,
+        'minimum_selected_features': 0.85,
+        'relability_rate': 90,
+    },
+    'HAI': {
+        'feat_num': 50,
+        'lm': (0.99995, 1),
+        'lr': 0.001,
+        'batch_size': 128,
+        'num_epoch': 3,
+        'feature_selection_batch_size': 64,
+        'feature_selection_num_epoch': 3,
+        'minimum_selected_features': 0.90,
+        'relability_rate': 40,
+    }
 }
 
+args_to_set_from_default = [
+    'feat_num',
+    'batch_size',
+    'num_epoch',
+    'feature_selection_batch_size',
+    'feature_selection_num_epoch',
+    'minimum_selected_features',
+    'relability_rate'
+]
 
-lm = lm_d[args.dataset]
+# Get configuration for the current dataset
+current_config = dataset_config[args.dataset]
 
-# Hyperparameters
-lr_d = {
-	'SWaT': 0.008, 
-	'WADI': 0.0001, 
-    'HAI': 0.0001,
-	}
+# Set threshold parameters for spot
+lm = current_config['lm']
 
-lr = lr_d[args.dataset]
+# Set learning rate
+lr = current_config['lr']
 
-batch_size_d = {
-    'SWaT': 128,
-    'WADI': 32,
-    'HAI': 128,
-}
-
-if args.batch_size is None:
-	args.batch_size = batch_size_d[args.dataset]
-
-num_epoch_d = {
-    'SWaT': 3,
-    'WADI': 1,
-    'HAI': 1,
-}
-
-if args.num_epoch is None:
-    args.num_epoch = num_epoch_d[args.dataset]
-
-threshold_d = {
-    'SWaT': 7,
-    'WADI': 4,
-    'HAI': 2,
-}
-
-if args.threshold is None:
-    args.threshold = threshold_d[args.dataset]
-
-device = opti_device
+for arg in args_to_set_from_default:
+    if getattr(args, arg) is None:
+        setattr(args, arg, current_config[arg])
+    else:
+        print(f"Using user-defined value for {arg}: {getattr(args, arg)}")

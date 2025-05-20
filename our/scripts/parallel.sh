@@ -3,7 +3,7 @@
 # --- Configuration ---
 
 # Maximum number of parallel jobs
-MAX_CONCURRENT=6
+MAX_CONCURRENT=1
 # Delay (in seconds) before starting the *next* job
 INITIAL_START_DELAY=30 # Delay before starting jobs for gpu memory allocation
 # Maximum number of retries for a failed task
@@ -14,9 +14,27 @@ RETRY_DELAY=1000
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR" # make sure the log directory exists
 
+# --- Read configurations from cross.json using jq ---
+if ! command -v jq &> /dev/null
+then
+    echo "jq command could not be found. Please install jq to parse cross.json."
+    exit 1
+fi
 
-quality_type=("pure" "noise" "missing" "duplicate" "delay" "mismatch")
-dataset=("SWaT" "WADI" "HAI")
+if [ ! -f "scripts/cross.json" ]; then
+    echo "Error: scripts/cross.json not found!"
+    exit 1
+fi
+
+# Store JSON content in variables
+single_types=($(jq -r '.single[]' scripts/cross.json))
+mixup_types=($(jq -r '.mix[]' scripts/cross.json))
+
+quality_type=("pure" "${single_types[@]}" "${mixup_types[@]}")
+# dataset=("SWaT" "WADI" "HAI")
+dataset=("WADI" "HAI")
+# dataset=("SWaT")
+levels=("low")
 
 
 # --- Helper function to run a single task with retries ---
@@ -33,30 +51,28 @@ run_task() {
 
     # Construct command and log file based on parameters
     if [[ "$quality" == "pure" ]]; then
-        cmd="$cmd_base" # pure type doesn't need level
+        cmd="$cmd_base" # pure type doesn't need level             
+        log_file="${LOG_DIR}/${dataset}_pure.log" # 
         if [[ "$mode" == "train" ]]; then
-             log_file="${LOG_DIR}/${dataset}_pure_train.log" # 
              task_desc="Training on pure ${dataset} dataset"
         else # test mode
-             log_file="${LOG_DIR}/${dataset}_pure_test.log"
              task_desc="Testing on pure ${dataset} dataset"
         fi
     else # Non-pure quality types
-        cmd="$cmd_base --level \"$level\"" # None-pure type need a level
+        cmd="$cmd_base --level \"$level\"" # None-pure type need a level             
+        log_file="${LOG_DIR}/${dataset}_${quality}_${level}.log"
          if [[ "$mode" == "train" ]]; then
-             cmd="$cmd --retrain" # Add --retrain for training
-             log_file="${LOG_DIR}/${dataset}_${quality}_${level}_train.log" # 
              task_desc="Training on ${quality} ${level} ${dataset} dataset"
          else # test mode
-             log_file="${LOG_DIR}/${dataset}_${quality}_${level}_test.log"
+             log_file="${LOG_DIR}/${dataset}_${quality}_${level}.log"
              task_desc="Testing on ${quality} ${level} ${dataset} dataset"
          fi
     fi
 
     # Add redirection for all cases
-    local full_cmd="$cmd > \"$log_file\" 2>/dev/null" # Redirect stdout to log file and stderr to /dev/null
+    # local full_cmd="$cmd > \"$log_file\" 2>/dev/null" # Redirect stdout to log file and stderr to /dev/null
+    local full_cmd="TQDM_DISABLE=1 $cmd > \"$log_file\" 2>&1" # Redirect stdout and stderr to log file
     echo "[STARTING] $task_desc (Log: $log_file)"
-
 
     # Execute with retry logic
     until eval "$full_cmd"; do
@@ -77,35 +93,29 @@ run_task() {
 export -f run_task
 export LOG_DIR MAX_RETRIES RETRY_DELAY
 
-# # --- Generate Training Tasks ---
-# echo "--- Generating Training Tasks ---"
-# train_tasks_args=()
-# for i in "${dataset[@]}"; do
-#     for j in "${quality_type[@]}"; do
-#         if [ "$j" == "pure" ]; then
-#             train_tasks_args+=("$i" "pure" "low" "train") # level is unused
-#         else
-#             train_tasks_args+=("$i" "$j" "low" "train")
-#             train_tasks_args+=("$i" "$j" "high" "train")
-#         fi
-#     done
-# done
+# --- Generate Training Tasks ---
+echo "--- Generating Training Tasks ---"
+train_tasks_args=()
+for i in "${dataset[@]}"; do
+    for j in "${quality_type[@]}"; do
+        for k in "${levels[@]}"; do
+            train_tasks_args+=("$i" "$j" "$k" "train")
+        done
+    done
+done
 
-# echo "--- Running Training Tasks (Max Parallel: $MAX_CONCURRENT, Delay: $INITIAL_START_DELAY s) ---"
-# printf "%s\n" "${train_tasks_args[@]}" |  paste -d ' ' - - - - | parallel --line-buffer --jobs "$MAX_CONCURRENT" --delay "$INITIAL_START_DELAY" --colsep ' ' run_task {1} {2} {3} {4}
-# echo "--- Training Tasks Complete ---"
+echo "--- Running Training Tasks (Max Parallel: $MAX_CONCURRENT, Delay: $INITIAL_START_DELAY s) ---"
+printf "%s\n" "${train_tasks_args[@]}" |  paste -d ' ' - - - - | parallel --line-buffer --jobs "$MAX_CONCURRENT" --delay "$INITIAL_START_DELAY" --colsep ' ' run_task {1} {2} {3} {4}
+echo "--- Training Tasks Complete ---"
 
 # --- Generate Testing Tasks ---
 echo "--- Generating Testing Tasks ---"
 test_tasks_args=()
 for i in "${dataset[@]}"; do
     for j in "${quality_type[@]}"; do
-        if [ "$j" == "pure" ]; then
-            test_tasks_args+=("$i" "pure" "low" "test") # level is empty string
-        else
-            test_tasks_args+=("$i" "$j" "low" "test")
-            test_tasks_args+=("$i" "$j" "high" "test")
-        fi
+        for k in "${levels[@]}"; do
+            test_tasks_args+=("$i" "$j" "$k" "test")
+        done
     done
 done
 
