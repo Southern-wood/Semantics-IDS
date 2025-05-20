@@ -1,8 +1,8 @@
 import numpy as np
 
 from .spot import SPOT
-from ..constants import lm
-from sklearn.metrics import roc_auc_score, f1_score
+from ..constants import lm, color
+from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, accuracy_score, confusion_matrix
 
 def calc_point2point(predict, actual):
     """
@@ -156,7 +156,7 @@ def bf_search(score, label, start, end=None, step_num=1, display_freq=1, verbose
 def pot_eval(init_score, score, label, q=1e-5):
     # print(str(lm))
     lms = lm[0]
-    min_lms = 1e-5
+    min_lms = 1e-7
     while True and lms > min_lms:
         try:
             s = SPOT(q)  # SPOT object
@@ -208,22 +208,22 @@ def eval_f1score(score, label):
         threholds.append(threhold)
     return fi_score_list, threholds
 
-def eval_f1score_threshold_print(score, label, threshold, verbose=False):
+def eval_f1score_threshold(score, label, threshold, verbose=False):
     f1, precision, recall, accuracy, specificity, auc = 0, 0, 0, 0, 0, 0
     for i in range(threshold - 1, threshold + 2):
-        prediction = adjust_predicts(score, labelsFinal, i)
+        prediction = adjust_predicts(score, label, i)
         tmp_f1 = f1_score(label, prediction)
-        if tmp_f1 < f1: continue
+        if tmp_f1 < f1: 
             f1 = tmp_f1
-            precision = precision_score(labelsFinal, pred)
-            recall = recall_score(labelsFinal, pred)
-            accuracy = accuracy_score(labelsFinal, pred)
-            tn, fp, fn, tp = confusion_matrix(labelsFinal, pred).ravel()
+            precision = precision_score(label, prediction)
+            recall = recall_score(label, prediction)
+            accuracy = accuracy_score(label, prediction)
+            tn, fp, fn, tp = confusion_matrix(label, prediction).ravel()
             specificity = tn / (tn + fp)
 
     # Calculate ROC AUC if possible
     try:
-      auc = roc_auc_score(labelsFinal, positive_sum)
+      auc = roc_auc_score(label, score)
     except:
       auc = float('nan')  # In case of only one class being present
 

@@ -1,7 +1,31 @@
 import torch
 import subprocess
+import os
 
 # This script is used to find the GPU with the most available memory using nvidia-smi.
+
+def set_cpu_limits(num):
+    """
+    Set CPU limits for the process.
+    :param num: Number of threads to set for various libraries.
+    """
+    os.environ["OMP_NUM_THREADS"] = str(num)  # OpenMP thread
+    os.environ["OPENBLAS_NUM_THREADS"] = str(num)  # OpenBLAS thread
+    os.environ["MKL_NUM_THREADS"] = str(num)  # MKL thread
+    os.environ["NUMEXPR_NUM_THREADS"] = str(num)  # NumExpr thread
+
+def get_optimal_device():
+    """
+    Get the optimal device for PyTorch.
+    :return: Device object for the optimal device(GPU with most free memory or CPU).
+    """
+    gpu_id = get_lowest_memory_gpu()
+    if gpu_id is not None:
+        opti_device = torch.device(f'cuda:{gpu_id}')
+    else:
+        opti_device = torch.device('cpu')
+    return opti_device
+
 
 def get_gpu_memory():
     result = subprocess.run(
@@ -21,11 +45,8 @@ def get_lowest_memory_gpu():
     if _ < 6000:
         print("Warning: No GPU with sufficient memory available.")
         return None
-    print(f'Best GPU: {best_gpu}')
+    # print(f'Best GPU: {best_gpu}')
     return best_gpu
 
-gpu_id = get_lowest_memory_gpu()
-if gpu_id is not None:
-    opti_device = torch.device(f'cuda:{gpu_id}')
-else:
-    opti_device = torch.device('cpu')
+
+
