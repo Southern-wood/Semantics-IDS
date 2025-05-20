@@ -374,6 +374,7 @@ class Solver(object):
             model_path = os.path.join(self.model_save_path, str(self.dataset) + '_' + str(self.quality_type) + '_latest_checkpoint.pth')
         else:
             model_path = os.path.join(self.model_save_path, str(self.dataset) + '_' + str(self.quality_type) + '_' + str(self.level) + '_latest_checkpoint.pth')
+        print("Loading model from: ", model_path)
         self.model.load_state_dict( 
             torch.load(model_path))
         self.model.eval()
