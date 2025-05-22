@@ -120,7 +120,6 @@ class Attention_Sparse_Top_M(nn.Module):
         # print("w1: ", w1, "w2: ", w2)
         # attn = w0 * attn + w1 * attn_topk + w2 * attn_sprase
         attn = w0 * attn + w1 * attn_topk
-        attn = self.attn_drop(attn)
         # attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B_, N, C)

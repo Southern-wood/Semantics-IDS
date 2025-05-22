@@ -132,9 +132,9 @@ class Trans_Semantics(nn.Module):
 			current_src_chunked = src_chunked[i].squeeze(-1)
 			current_src_chunked = torch.flatten(current_src_chunked,start_dim=0,end_dim=1)
 			#time_step/window*batch_size,1
-			module_device = next(self.embedding_layers[i].parameters()).device
-			if current_src_chunked.device != module_device:
-					self.embedding_layers[i].to(current_src_chunked.device)
+			# module_device = next(self.embedding_layers[i].parameters()).device
+			# if current_src_chunked.device != module_device:
+			# 		self.embedding_layers[i].to(current_src_chunked.device)
 			src_chunked_embedded = self.embedding_layers[i](current_src_chunked)
 			
 			#time_step/window*batch_size,d then Change Back

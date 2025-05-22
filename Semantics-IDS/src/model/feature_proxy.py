@@ -1,23 +1,23 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import os
 
 import numpy as np
 from tqdm import tqdm
 
 class FeatureProxy(torch.nn.Module):
-	def __init__(self, model, optimizer, scheduler, feat_num, batch_size, reliable_rate, minimum_selected_features, device):
+	def __init__(self, model, optimizer, scheduler, feat_num, batch_size, reliable_rate, minimum_selected_features):
 			super().__init__()
-			self.device = device
 			self.feat_num = feat_num
 			self.tau = 2.5  # beginning temperature
 
 			# trainable weights for feature selection
-			self.weights = nn.Parameter(torch.zeros(feat_num, device=device), requires_grad=True)
+			self.weights = nn.Parameter(torch.zeros(feat_num), requires_grad=True)
 			self.weights_optimizer = torch.optim.Adam([self.weights], lr=1e-5)
 			
 			# detector
-			self.detector = model.to(device)
+			self.detector = model
 			self.detector_optimizer = optimizer
 			self.detector_scheduler = scheduler
 
@@ -34,13 +34,13 @@ class FeatureProxy(torch.nn.Module):
 	def forward(self, window, mode = 'train'):
 			
 			if mode == 'train':
-					mask = torch.ones_like(self.weights, device=self.device)
+					mask = torch.ones_like(self.weights)
 			elif mode == 'feature_selection':
 					# generate Gumbel-softmax mask
 					logits = torch.stack([self.weights, torch.zeros_like(self.weights)], dim=1)
 					mask = F.gumbel_softmax(logits, tau=self.tau, hard=True, dim=-1)[:, 0]
 			elif mode == 'test':						
-					mask = torch.zeros_like(self.weights, device=self.device)
+					mask = torch.zeros_like(self.weights)
 					indices = torch.where(self.weights >= 0)[0]
 					if indices.shape[0] < self.minimum_selected_features:
 							indices = torch.topk(self.weights, self.minimum_selected_features)[1]
@@ -48,7 +48,6 @@ class FeatureProxy(torch.nn.Module):
 				
 			mask = mask.view(1, 1, -1)  # to match window shape
 
-			# apply mask to window and element
 			masked_window = window * mask
 
 			used_feats_num = torch.sum(mask).item()
@@ -79,10 +78,7 @@ class FeatureProxy(torch.nn.Module):
 				window = d.permute(1, 0, 2)
 				window = window[:-1, :, :]
 				elem = window[-1, :, :].view(1, d.shape[0], d.shape[2])
-				
-				window = window.to(self.device)
-				elem = elem.to(self.device)
-				
+
 				# Calculate the loss for each sample
 				raw_z = self(window, mode='train') # Set train mode to get the raw output
 				raw_loss = MSELoss(raw_z, elem)

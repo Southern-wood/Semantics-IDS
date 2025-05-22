@@ -3,7 +3,9 @@
 # --- Basic Configuration ---
 
 # Maximum number of parallel jobs
-MAX_CONCURRENT=3
+MAX_CONCURRENT=1
+# Maximum number of GPU
+MAX_GPU=8
 # Delay (in seconds) before starting the *next* job
 INITIAL_START_DELAY=45 # Delay before starting jobs for gpu memory allocation
 # Maximum number of retries for a failed task
@@ -65,11 +67,15 @@ run_task() {
     local train_level="$3"   # Level used for training
     local mode="$4"          # "train" or "test"
     local retries=0
-    local cmd_base="python main.py \
+    local fsdp_prefix="torchrun \
+                    --nproc_per_node=$MAX_GPU "
+    local cmd_base="$fsdp_prefix \
+                    main.py \
                     --dataset \"$dataset_name\" \
                     --quality_type \"$train_quality\" \
                     --level \"$train_level\" \
                     --mode \"$mode\""
+
     local cmd=""
     local log_file_suffix=""
     local task_desc_suffix=""
@@ -93,7 +99,6 @@ run_task() {
         task_desc="Testing model from $task_desc_suffix on its own data type"
     fi
 
-    cmd="TQDM_DISABLE=1 $cmd"
     time="[$(date '+%Y-%m-%d %H:%M:%S')]"
     echo -e "$time $STARING $task_desc -> $log_file"
 
@@ -120,7 +125,9 @@ run_task() {
 # Export the function and variables needed by parallel
 export -f run_task
 # Add STARING, SUCCESS, RETRY, FAILED to the export list
-export LOG_DIR MAX_RETRIES RETRY_DELAY STARING SUCCESS RETRY FAILED
+export LOG_DIR MAX_RETRIES RETRY_DELAY STARING SUCCESS RETRY FAILED MAX_GPU
+# export TQDM_DISABLE=1
+# export TQDM_DISABLE=1
 
 # --- Generate  Tasks ---
 generate_args() {

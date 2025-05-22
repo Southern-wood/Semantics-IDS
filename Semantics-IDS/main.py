@@ -1,5 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType, FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import pandas as pd
 import numpy as np
 import os 
@@ -10,7 +13,7 @@ from src.model.trans_semantics import Trans_Semantics
 from src.model.feature_proxy import FeatureProxy
 from src.constants import args, color
 
-from src.utils.resources_controll import set_cpu_limits, get_optimal_device
+from src.utils.FSDP_warp import setup, cleanup, fsdp_wrapper_model, create_logger
 from src.utils.data_loader import get_loader_segment
 from src.utils.metrics import pot_eval, eval_f1score, adjust_predicts
 from src.utils.path_handle import dataset_path, model_path
@@ -20,35 +23,43 @@ def save_model(model, model_save_path, optimizer, scheduler, epoch, accuracy_lis
   model_dir = os.path.dirname(model_save_path)
   if not os.path.exists(model_dir):
     os.makedirs(model_dir)
-  
-  torch.save({
-    'epoch': epoch,
-    'model_state_dict': model.state_dict(),
-    'optimizer_state_dict': optimizer.state_dict(),
-    'scheduler_state_dict': scheduler.state_dict(),
-    'accuracy_list': accuracy_list}, model_save_path)
+
+  full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+  with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
+    if dist.get_rank() == 0:
+      torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'accuracy_list': accuracy_list}, model_save_path)
+  dist.barrier() 
 
 
 def load_model(dims, batch_size, model_save_path):
   model = Trans_Semantics(dims, batch_size)
-  model = model.to(device)
+  model = fsdp_wrapper_model(model)
   optimizer = torch.optim.AdamW(model.parameters(), lr=model.lr, weight_decay=1e-5)
   scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=100, T_mult=2, eta_min=1e-6)
   if os.path.exists(model_save_path) and args.mode == 'test':
-    print(f"{color.GREEN}Loading pre-trained model: {model.name}{color.ENDC}")
-    checkpoint = torch.load(model_save_path, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    epoch = checkpoint['epoch']
-    accuracy_list = checkpoint['accuracy_list']
-    print("Current Model Trained Epoch:" + str(epoch + 1))
+    load_full_state_dict_config = FullStateDictConfig(offload_to_cpu=False, rank0_only=False)
+    if dist.get_rank() == 0:
+      logger.info(f"{color.GREEN}Loading pre-trained model: {model.name}{color.ENDC}")
+      with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_full_state_dict_config):
+        checkpoint = torch.load(model_save_path, weights_only=False, map_location="cpu")
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        epoch = checkpoint['epoch']
+        accuracy_list = checkpoint['accuracy_list']
+      dist.barrier()
+      logger.info("Current Model Trained Epoch:" + str(epoch + 1))
   elif args.mode == 'train':
-    print(f"{color.GREEN}Creating new model: {model.name}{color.ENDC}")
+    logger.info(f"{color.GREEN}Creating new model: {model.name}{color.ENDC}")
     epoch = -1
     accuracy_list = []
   else:
-    print(f"{color.RED}Model not found: {model_save_path}{color.ENDC}")
+    logger.info(f"{color.RED}Model not found: {model_save_path}{color.ENDC}")
     exit()
   return model, optimizer, scheduler, epoch, accuracy_list
 
@@ -57,15 +68,14 @@ def train_step(enhanced_model, data_loader):
   MSELoss = nn.MSELoss(reduction='none')
   total_loss = 0
   global_step = 0
+
+  enhanced_model.train()
   
   for i, data in enumerate(tqdm(data_loader)):
     window = data.permute(1, 0, 2)
     window = window[:-1, :, :]
     elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
-    
-    window = window.to(device)
-    elem = elem.to(device)
-    
+
     z = enhanced_model(window)
     loss = MSELoss(z, elem)
     total_loss += loss.sum().item() / data.shape[0]
@@ -90,15 +100,11 @@ def inference(enhanced_model, data_loader):
       data, _ = batch_data  
     else:
       data = batch_data
-    # print(f"Batch data shape: {data.shape}")
+    # logger.info(f"Batch data shape: {data.shape}")
     window = data.permute(1, 0, 2)
     window = window[:-1, :, :]
     elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
 
-    
-    window = window.to(device)
-    elem = elem.to(device)
-    
     z = enhanced_model(window, 'test')
     loss = MSELoss(z, elem)[0]
     loss_list.append(loss.detach().cpu())
@@ -108,9 +114,10 @@ def inference(enhanced_model, data_loader):
 
 if __name__ == '__main__':
   # Set resource limits
-  set_cpu_limits(args.cpu_limit)
-  global device
-  device = get_optimal_device() if args.gpu == 'auto' else torch.device(args.gpu)
+  setup()
+  logger = create_logger()
+  
+  
 
   dataset = args.dataset
   quality_type = args.quality_type
@@ -122,14 +129,16 @@ if __name__ == '__main__':
   prefix = args.data_path
   model_save_path = os.path.abspath(model_path(model_save_path, dataset, quality_type, level))
 
-  print(f"Model file path: {model_save_path}")
+  logger.info(f"Model file path: {model_save_path}")
 
   model, optimizer, scheduler, epoch, accuracy_list = load_model(feat_num, batch_size, model_save_path)
   enhanced_model = FeatureProxy(model, optimizer, scheduler, feat_num, 
-                                args.feature_selection_batch_size, args.relability_rate, args.minimum_selected_features, device)
+                                args.feature_selection_batch_size, args.relability_rate, args.minimum_selected_features)
+
+
 
   if args.mode == 'train':
-    print(f'{color.HEADER}Training Trans-Semantics on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
+    logger.info(f'{color.HEADER}Training Trans-Semantics on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
     enhanced_model.detector.train()
     num_epochs = num_epoch
     e = epoch + 1
@@ -137,14 +146,14 @@ if __name__ == '__main__':
 
     # build train_loader
     train_path = dataset_path(prefix, dataset, quality_type, level, 'train')
-    print(f"Train path: {train_path}")
+    logger.info(f"Train path: {train_path}")
     train_loader = get_loader_segment(mode='train', normal_path=train_path, batch_size=batch_size, win_size=model.n_window)
 
     for e in list(range(epoch + 1, epoch + num_epochs + 1)):
-      print(f'\n{color.BOLD}Epoch {e} training of total {num_epochs} epochs{color.ENDC}')
+      logger.info(f'\n{color.BOLD}Epoch {e} training of total {num_epochs} epochs{color.ENDC}')
       lossT, lr = train_step(enhanced_model, data_loader=train_loader)
       accuracy_list.append((lossT, lr))
-      print(color.BOLD + 'Training time: ' + "{:10.4f}".format(time() - start) + ' s' + color.ENDC)
+      logger.info(color.BOLD + 'Training time: ' + "{:10.4f}".format(time() - start) + ' s' + color.ENDC)
     save_model(model, model_save_path, optimizer, scheduler, e, accuracy_list)
     exit()
 
@@ -163,31 +172,31 @@ if __name__ == '__main__':
       labelsFinal.extend(label.cpu().numpy())
   labelsFinal = np.array(labelsFinal, dtype=int)
   
-  print("anomaly rate: ", np.sum(labelsFinal) / len(labelsFinal))
+  logger.info("anomaly rate: ", np.sum(labelsFinal) / len(labelsFinal))
 
   enhanced_model.train()
-  enhanced_model.weights.data = torch.zeros(feat_num, device=device)
+  enhanced_model.weights.data = torch.zeros(feat_num)
 
-  print(f'{color.HEADER}Adopting Trans-Semantics on {args.dataset}{color.ENDC}')
-  print(f'\n{color.BOLD}Auto Feature Selection on {val_path} {color.ENDC}')
+  logger.info(f'{color.HEADER}Adopting Trans-Semantics on {args.dataset}{color.ENDC}')
+  logger.info(f'\n{color.BOLD}Auto Feature Selection on {val_path} {color.ENDC}')
   
   for i in range(args.feature_selection_num_epoch):
     reliable_time_indices = enhanced_model.feature_selection(val_loader)
   
   indices = enhanced_model.selected_features()
-  print(f"\n{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
+  logger.info(f"\n{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
 
   enhanced_model.eval()
 
   with torch.no_grad():
-    print(f'\n{color.BOLD}Evaluating on {test_path} {color.ENDC}')
+    logger.info(f'\n{color.BOLD}Evaluating on {test_path} {color.ENDC}')
     loss = inference(enhanced_model, data_loader=test_loader)
-    print(f'\n{color.BOLD}Getting loss on Training set for POT {color.ENDC}')
+    logger.info(f'\n{color.BOLD}Getting loss on Training set for POT {color.ENDC}')
     lossT = inference(enhanced_model, data_loader=train_loader)
 
   indices = enhanced_model.selected_features()
 
-  print(f"\n{color.BOLD}POT for Selected Features") 
+  logger.info(f"\n{color.BOLD}POT for Selected Features") 
 
   df = pd.DataFrame()
   for feature_index in tqdm(range(lossT.shape[1])):
@@ -227,10 +236,12 @@ if __name__ == '__main__':
   except:
     auc = float('nan')  # In case of only one class being present
 
-  print(f"\n{color.BOLD}Evaluation Metrics:{color.ENDC}")
-  print(f"Precision: {precision:.4f}")
-  print(f"Recall: {recall:.4f}")
-  print(f"Accuracy: {accuracy:.4f}")
-  print(f"Specificity: {specificity:.4f}")
-  print(f"AUC: {auc:.4f}")
-  print(f"F1 Score: {f1:.4f}")
+  logger.info(f"\n{color.BOLD}Evaluation Metrics:{color.ENDC}")
+  logger.info(f"Precision: {precision:.4f}")
+  logger.info(f"Recall: {recall:.4f}")
+  logger.info(f"Accuracy: {accuracy:.4f}")
+  logger.info(f"Specificity: {specificity:.4f}")
+  logger.info(f"AUC: {auc:.4f}")
+  logger.info(f"F1 Score: {f1:.4f}")
+
+  cleanup()

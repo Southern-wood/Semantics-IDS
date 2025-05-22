@@ -20,5 +20,4 @@ parser.add_argument('--target_test_data', type=str, default=None, help='If set, 
 
 # Resource allocation
 parser.add_argument('--cpu_limit', type=int, default=16, help='number of CPU cores to use')
-parser.add_argument('--gpu', default='auto', type=str, help='GPU to use (default: auto)')
 args = parser.parse_args()
