@@ -4,7 +4,7 @@ import torch.nn as nn
 from timm.layers import DropPath,  trunc_normal_
 
 class LinearProjection(nn.Module):
-    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0., bias=True):
+    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.1, bias=True):
         super().__init__()
         inner_dim = dim_head *  heads
         self.heads = heads
@@ -132,7 +132,7 @@ class Attention_Sparse_Top_M(nn.Module):
         return f'dim={self.dim}, win_size={self.win_size}, num_heads={self.num_heads}'
 
 class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.1):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features

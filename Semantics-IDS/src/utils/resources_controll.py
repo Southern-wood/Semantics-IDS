@@ -42,10 +42,12 @@ def get_lowest_memory_gpu():
     gpu_memory = get_gpu_memory()
     free_memory = [(total - used, i) for i, (total, used) in enumerate(gpu_memory)]
     _, best_gpu = max(free_memory)
-    if _ < 6000:
+    if _ < 12000:
         print("Warning: No GPU with sufficient memory available.")
+        print("Using CPU instead.")
         return None
-    # print(f'Best GPU: {best_gpu}')
+    # print(f'Best GPU: {best_gpu}'
+    print(f'Using GPU: {best_gpu} with {free_memory[best_gpu][0]}MB free memory')
     return best_gpu
 
 

@@ -32,10 +32,10 @@ dataset_config = {
         'lr': 0.01,
         'batch_size': 256,
         'num_epoch': 3,
-        'feature_selection_batch_size': 128,
+        'feature_selection_batch_size': 64,
         'feature_selection_num_epoch': 3,
         'minimum_selected_features': 0.90,
-        'relability_rate': 35,
+        'relability_rate': 80,
     },
     'WADI': {
         'feat_num': 98,
@@ -57,7 +57,7 @@ dataset_config = {
         'feature_selection_batch_size': 64,
         'feature_selection_num_epoch': 3,
         'minimum_selected_features': 0.90,
-        'relability_rate': 40,
+        'relability_rate': 75,
     }
 }
 

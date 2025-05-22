@@ -92,7 +92,7 @@ class Trans_Semantics(nn.Module):
 		self.num_mhsa_layers = 3
 		self.dim_feedforward = 12
 		self.hidden_dim = self.n_feats * self.embedding
-		self.gru_layers = 3
+		self.gru_layers = 1
 		
 	
 		#Used for feature value embedding
@@ -153,7 +153,7 @@ class Trans_Semantics(nn.Module):
 		src_embedded = self.local_encode(src_embedded)
 		src_embedded = rearrange(src_embedded, 'b (w f) e -> w b (f e)', w = self.input_window)
 
-		initial_hidden_state = self.init_h[:, :batch_size, :]
+		initial_hidden_state = self.init_h[:, :batch_size, :].contiguous()
 		gru_out, hidden = self.gru(src_embedded[:-1,:,:], initial_hidden_state)
 		#Only return the last output
 		final_out = self.fcn(gru_out[-1,:,:]).unsqueeze(0)
