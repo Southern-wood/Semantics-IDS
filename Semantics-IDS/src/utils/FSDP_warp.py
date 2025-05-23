@@ -20,13 +20,8 @@ def fsdp_wrapper_model(model):
     local_rank = int(os.environ['LOCAL_RANK'])
     device = torch.device(f"cuda:{local_rank}")
     model = model.to(device)
-    model = model.to(torch.float16)
-    mix_precision = MixedPrecision(param_dtype=torch.float16, reduce_dtype=torch.float16, buffer_dtype=torch.float32)
     policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1000)
-    fsdp_model = FSDP(model,
-                    auto_wrap_policy=policy,
-                    mixed_precision=mix_precision,
-                    device_id=device)
+    fsdp_model = FSDP(model,auto_wrap_policy=policy,device_id=device,use_orig_params=True)
     return fsdp_model
 
 def create_logger():

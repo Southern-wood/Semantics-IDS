@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.distributed as dist
-from torch.distributed.fsdp.fully_sharded_data_parallel import StateDictType, FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import StateDictType
 import pandas as pd
 import numpy as np
 import os 
@@ -17,54 +17,78 @@ from src.utils.FSDP_warp import setup, cleanup, fsdp_wrapper_model, create_logge
 from src.utils.data_loader import get_loader_segment, get_normalization
 from src.utils.metrics import pot_eval, eval_f1score, adjust_predicts
 from src.utils.path_handle import dataset_path, model_path
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 
 def save_model(model, model_save_path, optimizer, scheduler, epoch, accuracy_list):   
-  model_dir = os.path.dirname(model_save_path)
-  if not os.path.exists(model_dir):
-    os.makedirs(model_dir)
+  if dist.get_rank() == 0:
+    model_dir = os.path.dirname(model_save_path)
+    if not os.path.exists(model_dir):
+      os.makedirs(model_dir)
+  dist.barrier() 
 
-  full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-  with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
-    if dist.get_rank() == 0:
-      torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'accuracy_list': accuracy_list}, model_save_path)
+  with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT):
+      model_state = model.state_dict()
+      optim_state = optimizer.state_dict()
+
+  if dist.get_rank() == 0:
+    torch.save({
+      'epoch': epoch,
+      'model_state_dict': model_state,
+      'optimizer_state_dict': optim_state,
+      'scheduler_state_dict': scheduler.state_dict(),
+      'accuracy_list': accuracy_list}, model_save_path)
+    logger.info(f"Model saved to {model_save_path} at epoch {epoch}")
   dist.barrier() 
 
 
 def load_model(dims, batch_size, model_save_path):
   model = Trans_Semantics(dims, batch_size)
   model = fsdp_wrapper_model(model)
+
   optimizer = torch.optim.AdamW(model.parameters(), lr=model.lr, weight_decay=1e-5)
   scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=100, T_mult=2, eta_min=1e-6)
+  
+  epoch = -1
+  accuracy_list = []
   if os.path.exists(model_save_path) and args.mode == 'test':
-    load_full_state_dict_config = FullStateDictConfig(offload_to_cpu=False, rank0_only=False)
+    checkpoint = torch.load(model_save_path, map_location="cpu")
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT):
+        model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
     if dist.get_rank() == 0:
       logger.info(f"{color.GREEN}Loading pre-trained model: {model.name}{color.ENDC}")
-      with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, load_full_state_dict_config):
-        checkpoint = torch.load(model_save_path, weights_only=False, map_location="cpu")
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        epoch = checkpoint['epoch']
-        accuracy_list = checkpoint['accuracy_list']
-      dist.barrier()
-      logger.info("Current Model Trained Epoch:" + str(epoch + 1))
+      epoch = checkpoint['epoch']
+      accuracy_list = checkpoint.get('accuracy_list', [])
+
+    current_device = torch.device(f"cuda:{os.environ['LOCAL_RANK']}")
+    loaded_epoch_tensor = torch.tensor(0, dtype=torch.long).to(current_device) 
+
+    if dist.get_rank() == 0:
+        loaded_epoch_tensor.fill_(epoch)
+    dist.broadcast(loaded_epoch_tensor, src=0)
+    if dist.get_rank() != 0:
+        epoch = loaded_epoch_tensor.item()
+    dist.barrier()
+
+
   elif args.mode == 'train':
-    logger.info(f"{color.GREEN}Creating new model: {model.name}{color.ENDC}")
-    epoch = -1
-    accuracy_list = []
+    if dist.get_rank() == 0:
+      logger.info(f"{color.GREEN}Creating new model: {model.name}{color.ENDC}")
   else:
-    logger.info(f"{color.RED}Model not found: {model_save_path}{color.ENDC}")
-    exit()
+    if dist.get_rank() == 0:
+        logger.error(f"{color.RED}Model not found at {model_save_path} or invalid mode '{args.mode}' for loading.{color.ENDC}")
+    dist.barrier()
+    raise FileNotFoundError(f"Model not found at {model_save_path} or invalid mode '{args.mode}' for loading.")
   return model, optimizer, scheduler, epoch, accuracy_list
 
 def train_step(enhanced_model, data_loader, normalization):
   MSELoss = nn.MSELoss(reduction='none')
+  mean_tensor = torch.from_numpy(normalization.mean_)
+  scale_tensor = torch.from_numpy(normalization.scale_)
   total_loss = 0
   global_step = 0
 
@@ -79,8 +103,11 @@ def train_step(enhanced_model, data_loader, normalization):
 
     z = enhanced_model(window)
     elem = elem.to(device=z.device, dtype=z.dtype)
-    window, elem = normalization.transform(window), normalization.transform(elem)
-    logger.info(f"shape of window: {window.shape}")
+    z, elem = z.squeeze(0), elem.squeeze(0)
+    mean_tensor = mean_tensor.to(device=z.device)
+    scale_tensor = scale_tensor.to(device=z.device)
+    z = (z - mean_tensor) / scale_tensor
+    elem = (elem - mean_tensor) / scale_tensor
     loss = MSELoss(z, elem)
     total_loss += loss.sum().item() / data.shape[0]
     
@@ -97,6 +124,8 @@ def train_step(enhanced_model, data_loader, normalization):
 
 def inference(enhanced_model, data_loader, normalization):
   MSELoss = nn.MSELoss(reduction='none')
+  mean_tensor = torch.from_numpy(normalization.mean_)
+  scale_tensor = torch.from_numpy(normalization.scale_)
   loss_list = []
   
   for i, batch_data in enumerate(tqdm(data_loader)):
@@ -111,8 +140,14 @@ def inference(enhanced_model, data_loader, normalization):
 
     z = enhanced_model(window, 'test')
     elem = elem.to(z.device)
-    window, elem = normalization.transform(window), normalization.transform(elem)
-    loss = MSELoss(z, elem)[0]
+    mean_tensor = mean_tensor.to(device=z.device)
+    scale_tensor = scale_tensor.to(device=z.device)
+    z, elem = z.squeeze(0), elem.squeeze(0)
+    z = (z - mean_tensor) / scale_tensor
+    elem = (elem - mean_tensor) / scale_tensor
+    loss = MSELoss(z, elem)
+
+    logger.info(f"Loss shape: {loss.shape}")
     loss_list.append(loss.detach().cpu())
   
   loss_list = torch.cat(loss_list, 0)
@@ -163,6 +198,7 @@ if __name__ == '__main__':
       logger.info(color.BOLD + 'Training time: ' + "{:10.4f}".format(time() - start) + ' s' + color.ENDC)
       logger.info(color.BOLD + 'Training loss: ' + "{:10.4f}".format(lossT) + color.ENDC)
     save_model(model, model_save_path, optimizer, scheduler, e, accuracy_list)
+    cleanup()
     exit()
 
   train_path = dataset_path(prefix, dataset, quality_type, level, 'train')
@@ -181,7 +217,7 @@ if __name__ == '__main__':
       labelsFinal.extend(label.cpu().numpy())
   labelsFinal = np.array(labelsFinal, dtype=int)
   
-  logger.info("anomaly rate: ", np.sum(labelsFinal) / len(labelsFinal))
+  logger.info("anomaly rate: " + str(np.sum(labelsFinal) / len(labelsFinal)))
 
   enhanced_model.train()
   enhanced_model.weights.data = torch.zeros(feat_num)
@@ -206,6 +242,8 @@ if __name__ == '__main__':
   indices = enhanced_model.selected_features()
 
   logger.info(f"{color.BOLD}POT for Selected Features") 
+  logger.info(f"Shape of lossT: {lossT.shape}")
+  logger.info(f"Shape of loss: {loss.shape}")
 
   df = pd.DataFrame()
   for feature_index in tqdm(range(lossT.shape[1])):

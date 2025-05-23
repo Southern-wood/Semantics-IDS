@@ -3,7 +3,7 @@
 # --- Basic Configuration ---
 
 # Maximum number of parallel jobs
-MAX_CONCURRENT=2
+MAX_CONCURRENT=1
 # Maximum number of GPU
 MAX_GPU=8
 MAX_CPU_PER_GPU=2

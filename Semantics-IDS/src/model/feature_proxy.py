@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import os
+import torch.distributed as dist
 
 import numpy as np
 from tqdm import tqdm
@@ -66,11 +66,7 @@ class FeatureProxy(torch.nn.Module):
 		reliable_time_indices = []
 		digest = TDigest()
 		mini_size = 0.1 * len(data_loader)
-		print(f"Mini size: {mini_size}")
 		reliable_count = 0
-
-		print("Batch size: ", self.batch_size)
-		print("Reliability rate: ", self.reliability_rate)
 		# print("Update frequency: ", self.update_freq)
 		
 		for batch_idx, d in enumerate(tqdm(data_loader)):
