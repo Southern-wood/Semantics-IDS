@@ -1,7 +1,8 @@
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy 
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.distributed.fsdp.fully_sharded_data_parallel import MixedPrecision
 import functools
 import os
 
@@ -19,8 +20,13 @@ def fsdp_wrapper_model(model):
     local_rank = int(os.environ['LOCAL_RANK'])
     device = torch.device(f"cuda:{local_rank}")
     model = model.to(device)
+    model = model.to(torch.float16)
+    mix_precision = MixedPrecision(param_dtype=torch.float16, reduce_dtype=torch.float16, buffer_dtype=torch.float32)
     policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1000)
-    fsdp_model = FSDP(model,auto_wrap_policy=policy)
+    fsdp_model = FSDP(model,
+                    auto_wrap_policy=policy,
+                    mixed_precision=mix_precision,
+                    device_id=device)
     return fsdp_model
 
 def create_logger():
@@ -35,7 +41,9 @@ def create_logger():
 
     if not dist.is_initialized() or dist.get_rank() == 0:
         ch = logging.StreamHandler()
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter(
+            fmt='[%(levelname)s %(asctime)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S')
         ch.setFormatter(formatter)
         logger.addHandler(ch)
     else:

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from timm.layers import DropPath,  trunc_normal_
+from xformers.ops import memory_efficient_attention
 
 class LinearProjection(nn.Module):
     def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.1, bias=True):
@@ -58,7 +59,7 @@ class TopM_MHSA_Block(nn.Module):
 
 ########### window-based self-attention #############
 class Attention_Sparse_Top_M(nn.Module):
-    def __init__(self, dim, win_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0.1, proj_drop=0.1, top_m=99):
+    def __init__(self, dim, win_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.1, top_m=99):
 
         super().__init__()
         self.dim = dim
@@ -67,19 +68,21 @@ class Attention_Sparse_Top_M(nn.Module):
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim ** -0.5
         self.top_m = top_m
+
+        self.attn_dropout_p = attn_drop
         
         self.qkv = LinearProjection(dim,num_heads,dim//num_heads,bias=qkv_bias)
         
-        self.attn_drop = nn.Sequential(
-            nn.Softmax(dim=-1),
-            nn.Dropout(attn_drop),
-        )
+        # self.attn_drop = nn.Sequential(
+        #     nn.Softmax(dim=-1),
+        #     nn.Dropout(attn_drop),
+        # )
         self.proj_drop = nn.Sequential(
             nn.Linear(dim, dim),
             nn.Dropout(proj_drop),
         )
 
-        self.softmax= nn.Softmax(dim=-1)
+        # self.softmax= nn.Softmax(dim=-1)
 
         self.relu = nn.ReLU()
         self.w = nn.Parameter(torch.ones(2)) 
@@ -98,34 +101,56 @@ class Attention_Sparse_Top_M(nn.Module):
     def forward(self, x, attn_kv=None, mask=None):
         B_, N, C = x.shape
 
-        q, k, v = self.qkv(x,attn_kv)
-        q = q * self.scale
-        raw_attn = (q @ k.transpose(-2, -1))
+        q_orig, k_orig, v_orig = self.qkv(x, attn_kv)
+        q_scaled = q_orig * self.scale
+        raw_attn = (q_scaled @ k_orig.transpose(-2, -1)) # raw_attn shape: (B_, num_heads, N_q, Nkv_actual)
 
-        attn = self.softmax(raw_attn)
+        q_xf = q_orig.permute(0, 2, 1, 3) # (B_, N_q, self.num_heads, D_head)
+        k_xf = k_orig.permute(0, 2, 1, 3) # (B_, N_kv, self.num_heads, D_head)
+        v_xf = v_orig.permute(0, 2, 1, 3) # (B_, N_kv, self.num_heads, D_head)
 
-        mask = torch.zeros(B_, self.num_heads, N, N, device=q.device, requires_grad=False)
-        # print("top_m: ", self.top_m, raw_attn.shape[-1])
-        topm = min(self.top_m, raw_attn.shape[-1])
-        index = torch.topk(raw_attn, k=topm, dim=-1, largest=True)[1]
-        mask.scatter_(-1, index, 1.)
-        attn_topk = torch.where(mask>0, raw_attn, torch.full_like(raw_attn, float('-inf')))
-        attn_topk = self.softmax(attn_topk)
+        output_dense = memory_efficient_attention(
+            q_xf, k_xf, v_xf,
+            attn_bias=None, # No explicit bias for dense path
+            p=self.attn_dropout_p
+        )
+
+        Nkv_actual = raw_attn.shape[-1]
+        Nkv_padded = (Nkv_actual + 7) // 8 * 8  # Ensure Nkv_padded is a multiple of 8
+
+        topm_k_val = min(self.top_m, Nkv_actual) # Use Nkv_actual for topk
+        _, indices_to_keep = torch.topk(raw_attn, k=topm_k_val, dim=-1, largest=True)
+
+        padded_bias_tensor_shape = list(raw_attn.shape)
+        padded_bias_tensor_shape[-1] = Nkv_padded
         
-        # attn_sprase = self.relu(raw_attn) ** 2
+        attn_bias_padded = torch.full(
+            padded_bias_tensor_shape,
+            float('-inf'),
+            dtype=raw_attn.dtype,
+            device=raw_attn.device
+        )
+
+        gather_src_zeros = torch.zeros_like(indices_to_keep, dtype=raw_attn.dtype, device=raw_attn.device)
+        attn_bias_padded.scatter_(dim=-1, index=indices_to_keep, src=gather_src_zeros)
+
+        topk_bias_for_xf = attn_bias_padded[:, :, :, :Nkv_actual]
         
-        w0 = torch.exp(self.w[0]) / torch.sum(torch.exp(self.w))
-        w1 = torch.exp(self.w[1]) / torch.sum(torch.exp(self.w))
-        # w2 = torch.exp(self.w[2]) / torch.sum(torch.exp(self.w))
-        # print("w1: ", w1, "w2: ", w2)
-        # attn = w0 * attn + w1 * attn_topk + w2 * attn_sprase
-        attn = w0 * attn + w1 * attn_topk
-        # attn = self.attn_drop(attn)
+        output_topk = memory_efficient_attention(
+            q_xf, k_xf, v_xf,
+            attn_bias=topk_bias_for_xf, 
+            p=self.attn_dropout_p
+        )
+        exp_w = torch.exp(self.w)
+        sum_exp_w = torch.sum(exp_w)
+        w0 = exp_w[0] / sum_exp_w
+        w1 = exp_w[1] / sum_exp_w
+        
+        combined_output = w0 * output_dense + w1 * output_topk
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
-        x = self.proj_drop(x) 
+        final_x = self.proj_drop(combined_output.contiguous().view(B_, N, C)) # Ensure output has correct shape for proj_drop
 
-        return x
+        return final_x
 
     def extra_repr(self) -> str:
         return f'dim={self.dim}, win_size={self.win_size}, num_heads={self.num_heads}'

@@ -86,9 +86,9 @@ class Trans_Semantics(nn.Module):
 		self.n_feats = feats  #The total number of features
 		self.n_window = 10
 		self.input_window = self.n_window - 1
-		self.bucket_size = 6
-		self.embedding = 6  #Each numerical and categorical features same embedding size
-		self.num_heads = 3
+		self.bucket_size = 16
+		self.embedding = 16  #Each numerical and categorical features same embedding size
+		self.num_heads = 2
 		self.num_mhsa_layers = 3
 		self.dim_feedforward = 12
 		self.hidden_dim = self.n_feats * self.embedding
@@ -154,6 +154,8 @@ class Trans_Semantics(nn.Module):
 		src_embedded = rearrange(src_embedded, 'b (w f) e -> w b (f e)', w = self.input_window)
 
 		initial_hidden_state = self.init_h[:, :batch_size, :].contiguous()
+		if initial_hidden_state.dtype != src_embedded.dtype:
+				initial_hidden_state = initial_hidden_state.to(src_embedded.dtype)
 		gru_out, hidden = self.gru(src_embedded[:-1,:,:], initial_hidden_state)
 		#Only return the last output
 		final_out = self.fcn(gru_out[-1,:,:]).unsqueeze(0)

@@ -3,9 +3,10 @@
 # --- Basic Configuration ---
 
 # Maximum number of parallel jobs
-MAX_CONCURRENT=1
+MAX_CONCURRENT=2
 # Maximum number of GPU
 MAX_GPU=8
+MAX_CPU_PER_GPU=2
 # Delay (in seconds) before starting the *next* job
 INITIAL_START_DELAY=45 # Delay before starting jobs for gpu memory allocation
 # Maximum number of retries for a failed task
@@ -67,8 +68,10 @@ run_task() {
     local train_level="$3"   # Level used for training
     local mode="$4"          # "train" or "test"
     local retries=0
+    local master_port=$((29500 + RANDOM % 100))
     local fsdp_prefix="torchrun \
-                    --nproc_per_node=$MAX_GPU "
+                    --nproc_per_node=$MAX_GPU \
+                    --master_port=$master_port"
     local cmd_base="$fsdp_prefix \
                     main.py \
                     --dataset \"$dataset_name\" \
@@ -126,7 +129,8 @@ run_task() {
 export -f run_task
 # Add STARING, SUCCESS, RETRY, FAILED to the export list
 export LOG_DIR MAX_RETRIES RETRY_DELAY STARING SUCCESS RETRY FAILED MAX_GPU
-# export TQDM_DISABLE=1
+export OMP_NUM_THREADS=$MAX_CPU_PER_GPU
+export TQDM_DISABLE=1
 # export TQDM_DISABLE=1
 
 # --- Generate  Tasks ---

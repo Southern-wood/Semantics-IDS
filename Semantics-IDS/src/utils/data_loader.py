@@ -10,11 +10,11 @@ class Dataset_Setter(Dataset):
         self.mode = mode
         self.step = step
         self.win_size = win_size
-        # self.normalization = StandardScaler()
+        self.normalization = StandardScaler()
         
         if normal_path is not None:
             self.train = np.load(normal_path)
-            # self.normalization.fit(self.train)
+            self.normalization.fit(self.train)
             # self.train = self.normalization.transform(self.train)
         if attack_path is not None:
             self.test = np.load(attack_path)
@@ -68,3 +68,7 @@ def get_loader_segment(normal_path=None, attack_path=None, validation_path=None,
                              generator=generator,
                              drop_last=True)
     return data_loader
+
+def get_normalization(normal_path=None, attack_path=None, validation_path=None, labels_path=None, win_size=30, step=1, mode='train', dataset='SWaT'):
+    dataset = Dataset_Setter(normal_path, attack_path, validation_path, labels_path, win_size, step, mode)
+    return dataset.normalization

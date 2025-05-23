@@ -14,7 +14,7 @@ from src.model.feature_proxy import FeatureProxy
 from src.constants import args, color
 
 from src.utils.FSDP_warp import setup, cleanup, fsdp_wrapper_model, create_logger
-from src.utils.data_loader import get_loader_segment
+from src.utils.data_loader import get_loader_segment, get_normalization
 from src.utils.metrics import pot_eval, eval_f1score, adjust_predicts
 from src.utils.path_handle import dataset_path, model_path
 
@@ -63,8 +63,7 @@ def load_model(dims, batch_size, model_save_path):
     exit()
   return model, optimizer, scheduler, epoch, accuracy_list
 
-
-def train_step(enhanced_model, data_loader):
+def train_step(enhanced_model, data_loader, normalization):
   MSELoss = nn.MSELoss(reduction='none')
   total_loss = 0
   global_step = 0
@@ -76,7 +75,12 @@ def train_step(enhanced_model, data_loader):
     window = window[:-1, :, :]
     elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
 
+    # Shape of window: (n_window, batch_size, n_features)
+
     z = enhanced_model(window)
+    elem = elem.to(device=z.device, dtype=z.dtype)
+    window, elem = normalization.transform(window), normalization.transform(elem)
+    logger.info(f"shape of window: {window.shape}")
     loss = MSELoss(z, elem)
     total_loss += loss.sum().item() / data.shape[0]
     
@@ -87,11 +91,11 @@ def train_step(enhanced_model, data_loader):
   
     # use in-epoch learning rate scheduler since datasets is too big
     enhanced_model.detector_scheduler.step()
-  avg_loss = total_loss / (len(data_loader) * data.shape[2])
+  avg_loss = total_loss / (len(data_loader) * data_loader.batch_size)
   return avg_loss, optimizer.param_groups[0]['lr']
 
 
-def inference(enhanced_model, data_loader):
+def inference(enhanced_model, data_loader, normalization):
   MSELoss = nn.MSELoss(reduction='none')
   loss_list = []
   
@@ -106,6 +110,8 @@ def inference(enhanced_model, data_loader):
     elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
 
     z = enhanced_model(window, 'test')
+    elem = elem.to(z.device)
+    window, elem = normalization.transform(window), normalization.transform(elem)
     loss = MSELoss(z, elem)[0]
     loss_list.append(loss.detach().cpu())
   
@@ -115,10 +121,10 @@ def inference(enhanced_model, data_loader):
 if __name__ == '__main__':
   # Set resource limits
   setup()
+  global logger
   logger = create_logger()
   
   
-
   dataset = args.dataset
   quality_type = args.quality_type
   level = args.level
@@ -148,16 +154,19 @@ if __name__ == '__main__':
     train_path = dataset_path(prefix, dataset, quality_type, level, 'train')
     logger.info(f"Train path: {train_path}")
     train_loader = get_loader_segment(mode='train', normal_path=train_path, batch_size=batch_size, win_size=model.n_window)
+    norm = get_normalization(normal_path=train_path, win_size=model.n_window)
 
     for e in list(range(epoch + 1, epoch + num_epochs + 1)):
-      logger.info(f'\n{color.BOLD}Epoch {e} training of total {num_epochs} epochs{color.ENDC}')
-      lossT, lr = train_step(enhanced_model, data_loader=train_loader)
+      logger.info(f'{color.BOLD}Epoch {e} training of total {num_epochs} epochs{color.ENDC}')
+      lossT, lr = train_step(enhanced_model, data_loader=train_loader, normalization=norm)
       accuracy_list.append((lossT, lr))
       logger.info(color.BOLD + 'Training time: ' + "{:10.4f}".format(time() - start) + ' s' + color.ENDC)
+      logger.info(color.BOLD + 'Training loss: ' + "{:10.4f}".format(lossT) + color.ENDC)
     save_model(model, model_save_path, optimizer, scheduler, e, accuracy_list)
     exit()
 
   train_path = dataset_path(prefix, dataset, quality_type, level, 'train')
+  norm = get_normalization(normal_path=train_path, win_size=model.n_window)
   test_path, label_path = dataset_path(prefix, dataset, quality_type, level, 'test')
   val_path = dataset_path(prefix, dataset, quality_type, level, 'val')
 
@@ -178,25 +187,25 @@ if __name__ == '__main__':
   enhanced_model.weights.data = torch.zeros(feat_num)
 
   logger.info(f'{color.HEADER}Adopting Trans-Semantics on {args.dataset}{color.ENDC}')
-  logger.info(f'\n{color.BOLD}Auto Feature Selection on {val_path} {color.ENDC}')
+  logger.info(f'{color.BOLD}Auto Feature Selection on {val_path} {color.ENDC}')
   
   for i in range(args.feature_selection_num_epoch):
     reliable_time_indices = enhanced_model.feature_selection(val_loader)
   
   indices = enhanced_model.selected_features()
-  logger.info(f"\n{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
+  logger.info(f"{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
 
   enhanced_model.eval()
 
   with torch.no_grad():
-    logger.info(f'\n{color.BOLD}Evaluating on {test_path} {color.ENDC}')
-    loss = inference(enhanced_model, data_loader=test_loader)
-    logger.info(f'\n{color.BOLD}Getting loss on Training set for POT {color.ENDC}')
-    lossT = inference(enhanced_model, data_loader=train_loader)
+    logger.info(f'{color.BOLD}Evaluating on {test_path} {color.ENDC}')
+    loss = inference(enhanced_model, data_loader=test_loader, normalization=norm)
+    logger.info(f'{color.BOLD}Getting loss on Training set for POT {color.ENDC}')
+    lossT = inference(enhanced_model, data_loader=train_loader, normalization=norm)
 
   indices = enhanced_model.selected_features()
 
-  logger.info(f"\n{color.BOLD}POT for Selected Features") 
+  logger.info(f"{color.BOLD}POT for Selected Features") 
 
   df = pd.DataFrame()
   for feature_index in tqdm(range(lossT.shape[1])):
@@ -236,7 +245,7 @@ if __name__ == '__main__':
   except:
     auc = float('nan')  # In case of only one class being present
 
-  logger.info(f"\n{color.BOLD}Evaluation Metrics:{color.ENDC}")
+  logger.info(f"{color.BOLD}Evaluation Metrics:{color.ENDC}")
   logger.info(f"Precision: {precision:.4f}")
   logger.info(f"Recall: {recall:.4f}")
   logger.info(f"Accuracy: {accuracy:.4f}")
