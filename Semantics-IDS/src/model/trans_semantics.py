@@ -7,7 +7,7 @@ from ..constants import lr, args
 from .topk_attention import TopM_MHSA
 
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
+import os
 
 # torch.manual_seed(1)
 
@@ -84,11 +84,11 @@ class Trans_Semantics(nn.Module):
 		self.lr = lr
 		self.batch = int(batch_size) 
 		self.n_feats = feats  #The total number of features
-		self.n_window = 10
+		self.n_window = 15
 		self.input_window = self.n_window - 1
-		self.bucket_size = 16
-		self.embedding = 16  #Each numerical and categorical features same embedding size
-		self.num_heads = 2
+		self.bucket_size = 24
+		self.embedding = 24  #Each numerical and categorical features same embedding size
+		self.num_heads = 3
 		self.num_mhsa_layers = 3
 		self.dim_feedforward = 12
 		self.hidden_dim = self.n_feats * self.embedding
@@ -126,15 +126,11 @@ class Trans_Semantics(nn.Module):
 		batch_size = src.shape[1]
 		src_chunked = src.chunk(src.shape[2],dim=2)
 
-		assert len(src_chunked) == self.n_feats
 		src_chunked_embedded_all = []
 		for i in range(0,self.n_feats):
 			current_src_chunked = src_chunked[i].squeeze(-1)
 			current_src_chunked = torch.flatten(current_src_chunked,start_dim=0,end_dim=1)
 			#time_step/window*batch_size,1
-			# module_device = next(self.embedding_layers[i].parameters()).device
-			# if current_src_chunked.device != module_device:
-			# 		self.embedding_layers[i].to(current_src_chunked.device)
 			src_chunked_embedded = self.embedding_layers[i](current_src_chunked)
 			
 			#time_step/window*batch_size,d then Change Back
@@ -154,8 +150,6 @@ class Trans_Semantics(nn.Module):
 		src_embedded = rearrange(src_embedded, 'b (w f) e -> w b (f e)', w = self.input_window)
 
 		initial_hidden_state = self.init_h[:, :batch_size, :].contiguous()
-		if initial_hidden_state.dtype != src_embedded.dtype:
-				initial_hidden_state = initial_hidden_state.to(src_embedded.dtype)
 		gru_out, hidden = self.gru(src_embedded[:-1,:,:], initial_hidden_state)
 		#Only return the last output
 		final_out = self.fcn(gru_out[-1,:,:]).unsqueeze(0)

@@ -3,9 +3,8 @@
 # --- Basic Configuration ---
 
 # Maximum number of parallel jobs
-MAX_CONCURRENT=1
-# Maximum number of GPU
-MAX_GPU=8
+MAX_CONCURRENT=2
+device_list=("1" "2" "3" "4" "5" "6" "7")
 MAX_CPU_PER_GPU=2
 # Delay (in seconds) before starting the *next* job
 INITIAL_START_DELAY=45 # Delay before starting jobs for gpu memory allocation
@@ -53,8 +52,8 @@ fi
 single_types=($(jq -r '.single[]' scripts/cross.json))
 mixup_types=($(jq -r '.mix[]' scripts/cross.json))
 
-quality_types=("pure" "${single_types[@]}" "${mixup_types[@]}")
-dataset_list=("SWaT" "WADI" "HAI")
+quality_types=("pure" "${mixup_types[@]}")
+dataset_list=("SWaT")
 modes=("train" "test")
 
 # quality_types=("pure" "noise" "missing" "duplicate" "delay" "mismatch" "mix_1" "mix_2")
@@ -67,12 +66,68 @@ run_task() {
     local train_quality="$2" # Quality used for training the model
     local train_level="$3"   # Level used for training
     local mode="$4"          # "train" or "test"
+
     local retries=0
-    local master_port=$((29500 + RANDOM % 100))
+    local status=1
+
+    local local_device_list_as_string="$device_list_as_string"
+    local device_list=() # Initialize as a local array
+    # Safely read the string into the array, handles empty string case too
+    if [[ -n "$local_device_list_as_string" ]]; then
+        IFS=' ' read -r -a device_list <<< "$local_device_list_as_string"
+    fi
+    
+    # Ditribute GPUs based on job slot
+    local job_slot=${PARALLEL_JOBSLOT}
+    local num_avail_gpus=${#device_list[@]}
+    local base_gpus_per_job=$((num_avail_gpus / MAX_CONCURRENT))
+    local remainder_gpus=$((num_avail_gpus % MAX_CONCURRENT))
+
+    local gpus_for_this_job=$base_gpus_per_job
+    if (( job_slot <= remainder_gpus )); then # Distribute the remainder GPUs
+        gpus_for_this_job=$((gpus_for_this_job + 1))
+    fi
+
+    local assigned_gpu_indices_for_this_job=()
+    local current_gpu_offset=0
+    for (( s=1; s<job_slot; s++ )); do # calculate the offset for the current job slot
+        local gpus_for_prev_job_slot=$base_gpus_per_job
+        if (( s <= remainder_gpus )); then
+            gpus_for_prev_job_slot=$((gpus_for_prev_job_slot + 1))
+        fi
+        current_gpu_offset=$((current_gpu_offset + gpus_for_prev_job_slot))
+    done
+
+    for (( i=0; i<gpus_for_this_job; i++ )); do
+        # Ensure current_gpu_offset + i is within bounds of device_list
+        local target_gpu_index=$((current_gpu_offset + i))
+        if (( target_gpu_index < num_avail_gpus )); then
+            assigned_gpu_indices_for_this_job+=("${device_list[$target_gpu_index]}")
+        else
+            time="[$(date '+%Y-%m-%d %H:%M:%S')]"
+            echo -e "$time $FAILED Task for dataset $dataset_name, quality $train_quality, mode $mode: GPU index out of bounds. Offset: $current_gpu_offset, i: $i, num_avail_gpus: $num_avail_gpus. Configuration issue."
+            return 1 # Exit with error
+        fi
+    done
+    
+    local assigned_devices_str=$(IFS=,; echo "${assigned_gpu_indices_for_this_job[*]}")
+    local count_nproc=${#assigned_gpu_indices_for_this_job[@]}
+
+    if [ -z "$assigned_devices_str" ] || [ "$count_nproc" -eq 0 ]; then
+        time="[$(date '+%Y-%m-%d %H:%M:%S')]"
+        echo -e "$time $FAILED Task for dataset $dataset_name, quality $train_quality, mode $mode: No GPUs assigned for job_slot ${job_slot}. num_avail_gpus: $num_avail_gpus. Configuration issue."
+        return 1 # Exit with error
+    fi
+    local master_port=$((29500 + (job_slot - 1)))
+    local cuda="CUDA_VISIBLE_DEVICES=${assigned_devices_str}"
     local fsdp_prefix="torchrun \
-                    --nproc_per_node=$MAX_GPU \
+                    --nproc_per_node=$count_nproc \
                     --master_port=$master_port"
-    local cmd_base="$fsdp_prefix \
+    # Calculate the device index based on job ID
+    # Find devices where (device_index + 1) is divisible by the job ID
+    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $BOLD[INFO]$ENDC: Job slot $job_slot, Using GPUs: $assigned_devices_str"
+    local cmd_base="$cuda \
+                    $fsdp_prefix \
                     main.py \
                     --dataset \"$dataset_name\" \
                     --quality_type \"$train_quality\" \
@@ -127,11 +182,16 @@ run_task() {
 
 # Export the function and variables needed by parallel
 export -f run_task
-# Add STARING, SUCCESS, RETRY, FAILED to the export list
-export LOG_DIR MAX_RETRIES RETRY_DELAY STARING SUCCESS RETRY FAILED MAX_GPU
+
+# Convert device_list array to a space-separated string for reliable export
+device_list_as_string="${device_list[*]}"
+export device_list_as_string # Export the string
+
+# Export other necessary variables (remove the array 'device_list' from direct export)
+export LOG_DIR MAX_RETRIES RETRY_DELAY STARING SUCCESS RETRY FAILED MAX_CONCURRENT
 export OMP_NUM_THREADS=$MAX_CPU_PER_GPU
 export TQDM_DISABLE=1
-# export TQDM_DISABLE=1
+
 
 # --- Generate  Tasks ---
 generate_args() {
@@ -151,6 +211,9 @@ echo Maximum concurrent jobs: $MAX_CONCURRENT
 echo Initial start delay: $INITIAL_START_DELAY seconds
 echo Maximum retries: $MAX_RETRIES
 echo Retry delay: $RETRY_DELAY seconds
+echo "==========================================="
+echo "Using GPU count: ${#device_list[@]}"
+echo "Device list: ${device_list[*]}"
 echo "==========================================="
 generate_args | parallel --line-buffer \
     --jobs $MAX_CONCURRENT \

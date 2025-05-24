@@ -31,11 +31,10 @@ dataset_config = {
         'lm': (0.993, 1),
         'lr': 0.01,
         'batch_size': 256,
-        'num_epoch': 1,
+        'num_epoch': 3,
         'feature_selection_batch_size': 64,
-        'feature_selection_num_epoch': 0,
-        'minimum_selected_features': 0.90,
-        'relability_rate': 80,
+        'feature_selection_num_epoch': 3,
+        'relability_rate': 90,
     },
     'WADI': {
         'feat_num': 98,
@@ -45,7 +44,6 @@ dataset_config = {
         'num_epoch': 1,
         'feature_selection_batch_size': 32,
         'feature_selection_num_epoch': 3,
-        'minimum_selected_features': 0.85,
         'relability_rate': 90,
     },
     'HAI': {
@@ -56,7 +54,6 @@ dataset_config = {
         'num_epoch': 3,
         'feature_selection_batch_size': 64,
         'feature_selection_num_epoch': 3,
-        'minimum_selected_features': 0.90,
         'relability_rate': 75,
     }
 }
@@ -67,7 +64,6 @@ args_to_set_from_default = [
     'num_epoch',
     'feature_selection_batch_size',
     'feature_selection_num_epoch',
-    'minimum_selected_features',
     'relability_rate'
 ]
 

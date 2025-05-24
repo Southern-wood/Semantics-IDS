@@ -2,7 +2,6 @@ import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
-from torch.distributed.fsdp.fully_sharded_data_parallel import MixedPrecision
 import functools
 import os
 

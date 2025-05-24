@@ -4,17 +4,16 @@ import torch.nn.functional as F
 import torch.distributed as dist
 
 import numpy as np
-from tqdm import tqdm
 
 class FeatureProxy(torch.nn.Module):
-	def __init__(self, model, optimizer, scheduler, feat_num, batch_size, reliable_rate, minimum_selected_features):
+	def __init__(self, model, optimizer, scheduler, feat_num, batch_size, reliable_rate):
 			super().__init__()
 			self.feat_num = feat_num
 			self.tau = 2.5  # beginning temperature
 
 			# trainable weights for feature selection
 			self.weights = nn.Parameter(torch.zeros(feat_num), requires_grad=True)
-			self.weights_optimizer = torch.optim.Adam([self.weights], lr=1e-5)
+			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.1)
 			
 			# detector
 			self.detector = model
@@ -23,16 +22,17 @@ class FeatureProxy(torch.nn.Module):
 
 			self.batch_size = batch_size
 			self.reliability_rate = reliable_rate
-			self.minimum_selected_features = int(minimum_selected_features * feat_num)
 		
 	def selected_features(self):
 			indices = torch.where(self.weights >= 0)[0]
-			if indices.shape[0] < self.minimum_selected_features:
-					indices = torch.topk(self.weights, self.minimum_selected_features)[1]
 			return indices.detach().cpu().numpy()
 	
 	def forward(self, window, mode = 'train'):
 			
+			expected_dtype = next(self.detector.parameters()).dtype
+			if window.dtype != expected_dtype:
+				window = window.to(dtype=expected_dtype)
+
 			if mode == 'train':
 					mask = torch.ones_like(self.weights)
 			elif mode == 'feature_selection':
@@ -42,8 +42,6 @@ class FeatureProxy(torch.nn.Module):
 			elif mode == 'test':						
 					mask = torch.zeros_like(self.weights)
 					indices = torch.where(self.weights >= 0)[0]
-					if indices.shape[0] < self.minimum_selected_features:
-							indices = torch.topk(self.weights, self.minimum_selected_features)[1]
 					mask[indices] = 1
 				
 			mask = mask.view(1, 1, -1)  # to match window shape
@@ -51,32 +49,63 @@ class FeatureProxy(torch.nn.Module):
 			masked_window = window * mask
 
 			used_feats_num = torch.sum(mask).item()
-
 			# forward through the feature proxy
 			if mode == 'feature_selection':
 					return self.detector(masked_window), used_feats_num
 			else:
 					return self.detector(masked_window)
 	
-	def feature_selection(self, data_loader):
+	def double(self):
+			"""Override double to handle optimizer recreation"""
+			result = super().double()
+			# Recreate optimizer for weights after dtype change
+			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.1)
+			return result
+	
+	def float(self):
+			"""Override float to handle optimizer recreation"""
+			result = super().float()
+			# Recreate optimizer for weights after dtype change  
+			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.1)
+			return result
+	
+	def feature_selection(self, data_loader, normalization = None):
 		from tdigest import TDigest
 		
 		MSELoss = nn.MSELoss(reduction='none')
+		
+		expected_dtype = next(self.detector.parameters()).dtype
+
+		if normalization is not None:
+			np_dtype = np.float64 if expected_dtype == torch.double else np.float32
+			mean_tensor = torch.from_numpy(normalization.mean_.astype(np_dtype)).to(dtype=expected_dtype)
+			scale_tensor = torch.from_numpy(normalization.scale_.astype(np_dtype)).to(dtype=expected_dtype)
 
 		reliable_time_indices = []
 		digest = TDigest()
 		mini_size = 0.1 * len(data_loader)
+		
 		reliable_count = 0
+		acumulated_loss = None
 		# print("Update frequency: ", self.update_freq)
 		
-		for batch_idx, d in enumerate(tqdm(data_loader)):
+		for batch_idx, d in enumerate(data_loader):
 			with torch.no_grad():
+				d.to(expected_dtype)
 				window = d.permute(1, 0, 2)
 				window = window[:-1, :, :]
 				elem = window[-1, :, :].view(1, d.shape[0], d.shape[2])
 
 				# Calculate the loss for each sample
 				raw_z = self(window, mode='train') # Set train mode to get the raw output
+				elem = elem.to(raw_z.device)
+
+				if normalization is not None:
+					mean_tensor = mean_tensor.to(device=raw_z.device)
+					scale_tensor = scale_tensor.to(device=raw_z.device)
+					raw_z = (raw_z - mean_tensor) / scale_tensor
+					elem = (elem - mean_tensor) / scale_tensor
+				
 				raw_loss = MSELoss(raw_z, elem)
 				loss_sum = raw_loss.detach().cpu().numpy().sum(axis=2).reshape(-1)
 				
@@ -87,24 +116,30 @@ class FeatureProxy(torch.nn.Module):
 			
 			if batch_idx * self.batch_size > mini_size and mean_loss < digest.percentile(self.reliability_rate):
 				reliable_count = reliable_count + 1
-			else:
-				continue
-				
-			# For gradient calculation with reliable samples
-			z, used_feats_num = self(window, mode='feature_selection')
-			self.weights_optimizer.zero_grad()
-			loss = MSELoss(z, elem) / used_feats_num
 
-			
-			loss.mean().backward()
-			self.update_tau(batch_idx)
-			self.weights_optimizer.step()
-			
-			# Add the corresponding real time indices to the list
-			reliable_time_indices.append(batch_idx)
+				# For gradient calculation with reliable samples
+				z, used_feats_num = self(window, mode='feature_selection')
+				if normalization is not None:
+					mean_tensor = mean_tensor.to(device=raw_z.device)
+					scale_tensor = scale_tensor.to(device=raw_z.device)
+					raw_z = (raw_z - mean_tensor) / scale_tensor
+					elem = (elem - mean_tensor) / scale_tensor
+				
+				loss = MSELoss(z, elem) * self.feat_num / used_feats_num
+				acumulated_loss = loss if acumulated_loss is None else acumulated_loss + loss
+
+				if reliable_count % 4 == 0:
+					self.weights_optimizer.zero_grad()
+					acumulated_loss.sum().backward()
+					self.update_tau(batch_idx)
+					self.weights_optimizer.step()
+					acumulated_loss = None
+				
+				# Add the corresponding real time indices to the list
+				reliable_time_indices.append(batch_idx)
 
 		return reliable_time_indices
 	
-	def update_tau(self, step, decay=0.001):
-			self.tau = max(0.5, 2.5 - decay * step)
+	def update_tau(self, step, decay=0.01):
+			self.tau = max(0.1, 2.5 - decay * step)
 

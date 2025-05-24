@@ -6,7 +6,6 @@ from torch.distributed.fsdp import StateDictType
 import pandas as pd
 import numpy as np
 import os 
-from tqdm import tqdm
 from time import time
 
 from src.model.trans_semantics import Trans_Semantics
@@ -48,7 +47,7 @@ def load_model(dims, batch_size, model_save_path):
   model = fsdp_wrapper_model(model)
 
   optimizer = torch.optim.AdamW(model.parameters(), lr=model.lr, weight_decay=1e-5)
-  scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=100, T_mult=2, eta_min=1e-6)
+  scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=100, T_mult=2, eta_min=1e-5)
   
   epoch = -1
   accuracy_list = []
@@ -60,7 +59,7 @@ def load_model(dims, batch_size, model_save_path):
     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
     if dist.get_rank() == 0:
-      logger.info(f"{color.GREEN}Loading pre-trained model: {model.name}{color.ENDC}")
+      logger.info(f"{color.GREEN}Loading trained model: {model.name}{color.ENDC}")
       epoch = checkpoint['epoch']
       accuracy_list = checkpoint.get('accuracy_list', [])
 
@@ -90,11 +89,14 @@ def train_step(enhanced_model, data_loader, normalization):
   mean_tensor = torch.from_numpy(normalization.mean_)
   scale_tensor = torch.from_numpy(normalization.scale_)
   total_loss = 0
-  global_step = 0
+
+  time_record = time()
+  logging_interval = 100
 
   enhanced_model.train()
   
-  for i, data in enumerate(tqdm(data_loader)):
+  for global_step, data in enumerate(data_loader):
+    
     window = data.permute(1, 0, 2)
     window = window[:-1, :, :]
     elem = window[-1, :, :].view(1, data.shape[0], data.shape[2])
@@ -114,7 +116,12 @@ def train_step(enhanced_model, data_loader, normalization):
     enhanced_model.detector_optimizer.zero_grad()
     loss.mean().backward()
     enhanced_model.detector_optimizer.step()
-    global_step += 1
+
+    if global_step % logging_interval == logging_interval - 1 and dist.get_rank() == 0:
+      Speed = logging_interval / (time() - time_record) # it/s
+      remain_time = (len(data_loader) - global_step) / Speed
+      logger.info(f"Speed: {Speed:.2f} it/s, Remaining time: {remain_time:.2f}s")
+      time_record = time()
   
     # use in-epoch learning rate scheduler since datasets is too big
     enhanced_model.detector_scheduler.step()
@@ -128,7 +135,12 @@ def inference(enhanced_model, data_loader, normalization):
   scale_tensor = torch.from_numpy(normalization.scale_)
   loss_list = []
   
-  for i, batch_data in enumerate(tqdm(data_loader)):
+  enhanced_model.eval()
+
+  time_record = time()
+  logging_interval = 100
+
+  for global_step, batch_data in enumerate(data_loader):
     if len(batch_data) == 2:
       data, _ = batch_data  
     else:
@@ -146,9 +158,13 @@ def inference(enhanced_model, data_loader, normalization):
     z = (z - mean_tensor) / scale_tensor
     elem = (elem - mean_tensor) / scale_tensor
     loss = MSELoss(z, elem)
-
-    logger.info(f"Loss shape: {loss.shape}")
     loss_list.append(loss.detach().cpu())
+
+    if global_step % logging_interval == logging_interval - 1 and dist.get_rank() == 0:
+      Speed = logging_interval / (time() - time_record) # it/s
+      remain_time = (len(data_loader) - global_step) / Speed
+      logger.info(f"Speed: {Speed:.2f} it/s, Remaining time: {remain_time:.2f}s")
+      time_record = time()
   
   loss_list = torch.cat(loss_list, 0)
   return loss_list.detach().numpy()
@@ -173,10 +189,7 @@ if __name__ == '__main__':
   logger.info(f"Model file path: {model_save_path}")
 
   model, optimizer, scheduler, epoch, accuracy_list = load_model(feat_num, batch_size, model_save_path)
-  enhanced_model = FeatureProxy(model, optimizer, scheduler, feat_num, 
-                                args.feature_selection_batch_size, args.relability_rate, args.minimum_selected_features)
-
-
+  enhanced_model = FeatureProxy(model, optimizer, scheduler, feat_num, args.feature_selection_batch_size, args.relability_rate)
 
   if args.mode == 'train':
     logger.info(f'{color.HEADER}Training Trans-Semantics on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
@@ -222,14 +235,16 @@ if __name__ == '__main__':
   enhanced_model.train()
   enhanced_model.weights.data = torch.zeros(feat_num)
 
-  logger.info(f'{color.HEADER}Adopting Trans-Semantics on {args.dataset}{color.ENDC}')
+  logger.info(f'{color.HEADER}Adapting Trans-Semantics on {args.dataset}{color.ENDC}')
   logger.info(f'{color.BOLD}Auto Feature Selection on {val_path} {color.ENDC}')
   
+
   for i in range(args.feature_selection_num_epoch):
-    reliable_time_indices = enhanced_model.feature_selection(val_loader)
-  
+    logger.info(f'{color.BOLD}Epoch {i} Adapting of total {args.feature_selection_num_epoch} epochs{color.ENDC}')
+    reliable_time_indices = enhanced_model.feature_selection(val_loader, normalization=norm)
+
   indices = enhanced_model.selected_features()
-  logger.info(f"{color.BOLD}Feature Selection Indices: {indices}\nCount: {len(indices)}{color.ENDC}")
+  logger.info(f"{color.BOLD}Selected Features Count: {len(indices)}{color.ENDC}")
 
   enhanced_model.eval()
 
@@ -241,19 +256,17 @@ if __name__ == '__main__':
 
   indices = enhanced_model.selected_features()
 
-  logger.info(f"{color.BOLD}POT for Selected Features") 
-  logger.info(f"Shape of lossT: {lossT.shape}")
-  logger.info(f"Shape of loss: {loss.shape}")
+  logger.info(f"{color.BOLD}POT for Selected Features...{color.ENDC}") 
 
   df = pd.DataFrame()
-  for feature_index in tqdm(range(lossT.shape[1])):
+  for feature_index in range(lossT.shape[1]):
     if feature_index not in indices:
       continue
       
     feature_lossT = lossT[:, feature_index]
     feature_loss = loss[:, feature_index]
 
-		# pot_eval return raw prediction, without point adjustment
+    # pot_eval return raw prediction, without point adjustment
     _, feature_y_pred = pot_eval(feature_lossT, feature_loss, labelsFinal)
     prediction_rate = np.sum(feature_y_pred) / len(feature_y_pred)
     if prediction_rate > 0.5: # if the prediction rate makes no sense, we just skip this feature
