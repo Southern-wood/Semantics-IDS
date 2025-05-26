@@ -84,11 +84,11 @@ class Trans_Semantics(nn.Module):
 		self.lr = lr
 		self.batch = int(batch_size) 
 		self.n_feats = feats  #The total number of features
-		self.n_window = 15
+		self.n_window = 10
 		self.input_window = self.n_window - 1
-		self.bucket_size = 24
-		self.embedding = 24  #Each numerical and categorical features same embedding size
-		self.num_heads = 3
+		self.bucket_size = 16
+		self.embedding = 16  #Each numerical and categorical features same embedding size
+		self.num_heads = 2
 		self.num_mhsa_layers = 3
 		self.dim_feedforward = 12
 		self.hidden_dim = self.n_feats * self.embedding

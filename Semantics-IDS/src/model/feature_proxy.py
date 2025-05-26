@@ -13,7 +13,7 @@ class FeatureProxy(torch.nn.Module):
 
 			# trainable weights for feature selection
 			self.weights = nn.Parameter(torch.zeros(feat_num), requires_grad=True)
-			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.1)
+			self.weights_optimizer = torch.optim.Adam([self.weights], lr=1e-5)
 			
 			# detector
 			self.detector = model
@@ -55,19 +55,6 @@ class FeatureProxy(torch.nn.Module):
 			else:
 					return self.detector(masked_window)
 	
-	def double(self):
-			"""Override double to handle optimizer recreation"""
-			result = super().double()
-			# Recreate optimizer for weights after dtype change
-			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.1)
-			return result
-	
-	def float(self):
-			"""Override float to handle optimizer recreation"""
-			result = super().float()
-			# Recreate optimizer for weights after dtype change  
-			self.weights_optimizer = torch.optim.Adam([self.weights], lr=0.1)
-			return result
 	
 	def feature_selection(self, data_loader, normalization = None):
 		from tdigest import TDigest
@@ -86,7 +73,6 @@ class FeatureProxy(torch.nn.Module):
 		mini_size = 0.1 * len(data_loader)
 		
 		reliable_count = 0
-		acumulated_loss = None
 		# print("Update frequency: ", self.update_freq)
 		
 		for batch_idx, d in enumerate(data_loader):
@@ -122,24 +108,21 @@ class FeatureProxy(torch.nn.Module):
 				if normalization is not None:
 					mean_tensor = mean_tensor.to(device=raw_z.device)
 					scale_tensor = scale_tensor.to(device=raw_z.device)
-					raw_z = (raw_z - mean_tensor) / scale_tensor
+					z = (z - mean_tensor) / scale_tensor
 					elem = (elem - mean_tensor) / scale_tensor
 				
 				loss = MSELoss(z, elem) * self.feat_num / used_feats_num
-				acumulated_loss = loss if acumulated_loss is None else acumulated_loss + loss
 
-				if reliable_count % 4 == 0:
-					self.weights_optimizer.zero_grad()
-					acumulated_loss.sum().backward()
-					self.update_tau(batch_idx)
-					self.weights_optimizer.step()
-					acumulated_loss = None
+				self.weights_optimizer.zero_grad()
+				loss.mean().backward()
+				self.update_tau(batch_idx)
+				self.weights_optimizer.step()
 				
 				# Add the corresponding real time indices to the list
 				reliable_time_indices.append(batch_idx)
 
 		return reliable_time_indices
 	
-	def update_tau(self, step, decay=0.01):
+	def update_tau(self, step, decay=0.005):
 			self.tau = max(0.1, 2.5 - decay * step)
 
