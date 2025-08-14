@@ -56,93 +56,129 @@ def save_dataset(train, test, labels, dataset, noise_type, level, output_path, v
     np.save(os.path.join(dataset_folder, 'test', labels_file_name), labels)
 
 
-def random_select_columns(num, column_list):
-  return random.sample(list(column_list), num)
+def random_select_columns(num, column_list, base_columns=None):
+  columns = set(column_list)
+  if base_columns is not None:
+    # high level columns must contain low level columns
+    base_columns = set(base_columns)
+    rest = list(columns - base_columns)
+    need = num - len(base_columns)
+    if need > 0:
+      return list(base_columns) + random.sample(rest, need)
+    else:
+      return list(base_columns)
+  else:
+    return random.sample(list(columns), num)
+
+
 
 def generate_noise(dataset, train, test, labels, cate, config, noise_type):
 
   if noise_type == 'pure':
     save_dataset(train, test, labels, dataset, noise_type, None, config['output_folder'], config['validate'], config['validation_ratio'])
+    return
 
-  # If the noise type is single-type, load the corresponding configuration
   if noise_type in ['noise', 'missing', 'duplicate', 'delay']:
-    type_config = config['noise_types'][noise_type]  
-
-    # Note we do not change the original dataset in single noise settings, so no need to copy the original dataset
-
-    for level in ['low', 'high']:
+    type_config = config['noise_types'][noise_type]
+    for idx, level in enumerate(['low', 'high']):
       parameter = type_config[level]
-      # Every noise type has its own feature ratio (rate of features to be selected)
       feature_ratio = parameter['feature_ratio']
-      if noise_type == 'noise':  
-        # gaussian noise need to be added to numerical columns
+
+      # noise is special case, it only applies to numeric columns
+      if noise_type == 'noise':
         intensity = parameter['intensity']
         numeric_columns = [col for col in train.columns if col not in cate]
-        target_columns = random_select_columns(int(len(numeric_columns) * feature_ratio), numeric_columns)
+        if level == 'low' and noise_type not in noise_columns_cache:
+          target_columns = random_select_columns(int(len(numeric_columns) * feature_ratio), numeric_columns)
+          noise_columns_cache['noise'] = target_columns
+        elif level == 'low':
+          target_columns = noise_columns_cache['noise']
+        else:
+          low_columns = noise_columns_cache['noise']
+          target_columns = random_select_columns(int(len(numeric_columns) * feature_ratio), numeric_columns, base_columns=low_columns)
         noised_train = noise(train, target_columns, intensity)
         noised_test = noise(test, target_columns, intensity)
+      else:
 
-      elif noise_type == 'missing':
-        missing_ratio = parameter['missing_ratio']
-        target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
-        noised_train = missing(train, target_columns, missing_ratio)
-        noised_test = missing(test, target_columns, missing_ratio)
-      
-      elif noise_type == "duplicate":
-        duplicate_ratio = parameter['duplicate_ratio']
-        duplicate_length = parameter['duplicate_length']
-        target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
-        noised_train = duplicate(train, target_columns, duplicate_ratio, duplicate_length)
-        noised_test = duplicate(test, target_columns, duplicate_ratio, duplicate_length)
-
-      elif noise_type == "delay":
-        delay_length = parameter['delay_length']
-        target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
-        noised_train = delay(train, target_columns, delay_length)
-        noised_test = delay(test, target_columns, delay_length)
-
-      # Save the modified dataset
+        # for other noise types, we can use the same logic
+        if level == 'low' or noise_type not in noise_columns_cache:
+          target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
+          noise_columns_cache[noise_type] = target_columns
+        elif level == 'low':
+          target_columns = noise_columns_cache[noise_type]
+        else:
+          low_columns = noise_columns_cache[noise_type]
+          target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns, base_columns=low_columns)
+        if noise_type == 'missing':
+          missing_ratio = parameter['missing_ratio']
+          noised_train = missing(train, target_columns, missing_ratio)
+          noised_test = missing(test, target_columns, missing_ratio)
+        elif noise_type == 'duplicate':
+          duplicate_ratio = parameter['duplicate_ratio']
+          duplicate_length = parameter['duplicate_length']
+          noised_train = duplicate(train, target_columns, duplicate_ratio, duplicate_length)
+          noised_test = duplicate(test, target_columns, duplicate_ratio, duplicate_length)
+        elif noise_type == 'delay':
+          delay_length = parameter['delay_length']
+          noised_train = delay(train, target_columns, delay_length)
+          noised_test = delay(test, target_columns, delay_length)
       save_dataset(noised_train, noised_test, labels, dataset, noise_type, level, config['output_folder'], config['validate'], config['validation_ratio'])
+
   elif noise_type.startswith('mix'):
     types_list = config['noise_types'][noise_type]['types']
     train_original = train.copy()
     test_original = test.copy()
-    
-    # Keep the original dataset for each noise type, so the high level will not mix with the low level
-
-    for level in ['low', 'high']:
+    # cache for columns selected for each noise type
+    mix_columns_cache = {t: {} for t in types_list}
+    for idx, level in enumerate(['low', 'high']):
       print(f"mixing noise type: {noise_type}, level: {level}, consist of {types_list}")
       train = train_original.copy()
       test = test_original.copy()
       for type_name in types_list:
-        # search for the item in the list with level attribute matching level_name
         parameter = config['noise_types'][type_name][level]
         feature_ratio = parameter['feature_ratio']
-        
         if type_name == 'noise':
-          # gaussian noise need to be added to numerical columns
           intensity = parameter['intensity']
           numeric_columns = [col for col in train.columns if col not in cate]
-          target_columns = random_select_columns(int(len(numeric_columns) * feature_ratio), numeric_columns)
+          if level == 'low':
+            target_columns = random_select_columns(int(len(numeric_columns) * feature_ratio), numeric_columns)
+            mix_columns_cache[type_name]['low'] = target_columns
+          else:
+            low_columns = mix_columns_cache[type_name]['low']
+            target_columns = random_select_columns(int(len(numeric_columns) * feature_ratio), numeric_columns, base_columns=low_columns)
           train = noise(train, target_columns, intensity)
           test = noise(test, target_columns, intensity)
         elif type_name == 'missing':
           missing_ratio = parameter['missing_ratio']
-          target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
+          if level == 'low':
+            target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
+            mix_columns_cache[type_name]['low'] = target_columns
+          else:
+            low_columns = mix_columns_cache[type_name]['low']
+            target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns, base_columns=low_columns)
           train = missing(train, target_columns, missing_ratio)
           test = missing(test, target_columns, missing_ratio)
-        elif type_name == "duplicate":
+        elif type_name == 'duplicate':
           duplicate_ratio = parameter['duplicate_ratio']
           duplicate_length = parameter['duplicate_length']
-          target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
+          if level == 'low':
+            target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
+            mix_columns_cache[type_name]['low'] = target_columns
+          else:
+            low_columns = mix_columns_cache[type_name]['low']
+            target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns, base_columns=low_columns)
           train = duplicate(train, target_columns, duplicate_ratio, duplicate_length)
           test = duplicate(test, target_columns, duplicate_ratio, duplicate_length)
-        elif type_name == "delay":
+        elif type_name == 'delay':
           delay_length = parameter['delay_length']
-          target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
+          if level == 'low':
+            target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns)
+            mix_columns_cache[type_name]['low'] = target_columns
+          else:
+            low_columns = mix_columns_cache[type_name]['low']
+            target_columns = random_select_columns(int(len(train.columns) * feature_ratio), train.columns, base_columns=low_columns)
           train = delay(train, target_columns, delay_length)
           test = delay(test, target_columns, delay_length)
-
       save_dataset(train, test, labels, dataset, noise_type, level, config['output_folder'], config['validate'], config['validation_ratio'])
 
 
@@ -160,6 +196,8 @@ if __name__ == '__main__':
 
   root_path = config['data_folder']
   train, test, labels, categorical_column = load_dataset(dataset, root_path)
+  global noise_columns_cache
+  noise_columns_cache = {}
   for noise_type in types:
     print(f"Generating noise data for {noise_type}")
     # Generate noise data for the specified type

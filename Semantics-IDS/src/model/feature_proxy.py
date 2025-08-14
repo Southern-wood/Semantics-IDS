@@ -1,19 +1,20 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
+from math import ceil
 
 import numpy as np
 
 class FeatureProxy(torch.nn.Module):
-	def __init__(self, model, optimizer, scheduler, feat_num, batch_size, reliable_rate):
+	def __init__(self, model, optimizer, scheduler, feat_num, batch_size, reliable_rate, minim_feat):
 			super().__init__()
 			self.feat_num = feat_num
 			self.tau = 2.5  # beginning temperature
+			self.minim_feat = ceil(feat_num * minim_feat)
 
 			# trainable weights for feature selection
 			self.weights = nn.Parameter(torch.zeros(feat_num), requires_grad=True)
-			self.weights_optimizer = torch.optim.Adam([self.weights], lr=1e-5)
+			self.weights_optimizer = torch.optim.Adam([self.weights], lr=1e-2)
 			
 			# detector
 			self.detector = model
@@ -25,6 +26,11 @@ class FeatureProxy(torch.nn.Module):
 		
 	def selected_features(self):
 			indices = torch.where(self.weights >= 0)[0]
+			# If fewer than minimum features are selected, choose top features by weight
+			if len(indices) < self.minim_feat:
+				# Sort weights in descending order and get top indices
+				_, top_indices = torch.topk(self.weights, self.minim_feat)
+				indices = top_indices
 			return indices.detach().cpu().numpy()
 	
 	def forward(self, window, mode = 'train'):
@@ -42,6 +48,10 @@ class FeatureProxy(torch.nn.Module):
 			elif mode == 'test':						
 					mask = torch.zeros_like(self.weights)
 					indices = torch.where(self.weights >= 0)[0]
+					if len(indices) < self.minim_feat:
+						# Sort weights in descending order and get top indices
+						_, top_indices = torch.topk(self.weights, self.minim_feat)
+						indices = top_indices
 					mask[indices] = 1
 				
 			mask = mask.view(1, 1, -1)  # to match window shape

@@ -84,7 +84,7 @@ class Trans_Semantics(nn.Module):
 		self.lr = lr
 		self.batch = int(batch_size) 
 		self.n_feats = feats  #The total number of features
-		self.n_window = 10
+		self.n_window = 25
 		self.input_window = self.n_window - 1
 		self.bucket_size = 16
 		self.embedding = 16  #Each numerical and categorical features same embedding size
@@ -102,7 +102,7 @@ class Trans_Semantics(nn.Module):
 		
 		#Used for spatial property modeling
 	
-		self.topm_mhsa = TopM_MHSA(self.embedding, (self.input_window, self.n_feats), self.num_heads, self.num_mhsa_layers, self.dim_feedforward, dropout=0.1, top_m=99)
+		self.topm_mhsa = TopM_MHSA(self.embedding, (self.input_window, self.n_feats), self.num_heads, self.num_mhsa_layers, self.dim_feedforward, dropout=0.1, top_m=0.25)
 
 		# self.local_transformer_encoder = TransformerEncoder(local_encoder_layers, 1)
 		

@@ -1,6 +1,6 @@
 import numpy as np
 
-from .spot import SPOT
+from .spot import SPOT, quikSPOT, dSPOT
 from ..constants import lm, color
 from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score, accuracy_score, confusion_matrix
 
@@ -155,11 +155,61 @@ def bf_search(score, label, start, end=None, step_num=1, display_freq=1, verbose
 
 def pot_eval(init_score, score, label, q=1e-5):
     # print(str(lm))
+    min_lms = 1e-5
     lms = lm[0]
-    min_lms = 1e-7
     while True and lms > min_lms:
         try:
-            s = SPOT(q)  # SPOT object
+            s = SPOT()  # SPOT object
+            s.fit(init_score, score)  # data import
+            s.initialize(level=lms, min_extrema=False, verbose=False)  # initialization step
+            
+        except Exception as e:
+            # print(e)
+            lms = lms * 0.999
+            # print(lms)
+        else: break
+    if lms <= min_lms:
+        return {}, np.array([0] * len(score))
+    
+    ret = s.run(dynamic=False)  # run
+    # print(len(ret['alarms']))
+    # print(len(ret['thresholds']))
+    pot_th = np.mean(ret['thresholds']) * lm[1]
+    score = np.asarray(score)
+    predict = score > pot_th
+    prediction_rate = np.sum(predict) / len(predict)
+    # if prediction_rate > 0.5:
+    #     raise ValueError("Prediction rate is too high")
+
+    p_t = calc_point2point(predict, label)
+
+    pred, p_latency = adjust_predicts(score, label, pot_th, calc_latency=True)
+    # DEBUG - np.save(f'{debug}.npy', np.array(pred))
+    # DEBUG - print(np.argwhere(np.array(pred)))
+    p_t_adjust = calc_point2point(pred, label)
+
+    # print('POT result: ', p_t, pot_th, p_latency)
+    return {
+        'f1': p_t[0],
+        'f1_adjusted': p_t_adjust[0],
+        'precision': p_t[1],
+        'recall': p_t[2],
+        'TP': p_t[3],
+        'TN': p_t[4],
+        'FP': p_t[5],
+        'FN': p_t[6],
+        'ROC/AUC': p_t[7],
+        'threshold': pot_th,
+        # 'pot-latency': p_latency
+    }, np.array(predict)
+
+def quik_pot_eval(init_score, score, label, q=1e-5):
+    # print(str(lm))
+    lms = lm[0]
+    min_lms = lm[1]
+    while True and lms > min_lms:
+        try:
+            s = quikSPOT(q)  # SPOT object
             s.fit(init_score, score)  # data import
             s.initialize(level=lms, min_extrema=False, verbose=False)  # initialization step
         except Exception as e:
@@ -170,7 +220,7 @@ def pot_eval(init_score, score, label, q=1e-5):
     if lms <= min_lms:
         return {}, np.array([0] * len(score))
     
-    ret = s.run(dynamic=False)  # run
+    ret = s.run(dynamic=True)  # run
     # print(len(ret['alarms']))
     # print(len(ret['thresholds']))
     pot_th = np.mean(ret['thresholds']) * lm[1]

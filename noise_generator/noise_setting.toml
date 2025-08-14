@@ -14,38 +14,38 @@ validation_ratio = 0.1
 
 # the following parameters are used to generate noise
 [noise_types.noise.low]
+feature_ratio = 0.2
+intensity = 0.1
+
+[noise_types.noise.high]
 feature_ratio = 0.5
 intensity = 0.3
 
-[noise_types.noise.high]
-feature_ratio = 0.8
-intensity = 0.7
-
 [noise_types.missing.low]
-feature_ratio = 0.2
-missing_ratio = 0.1
+feature_ratio = 0.1
+missing_ratio = 0.05
 
 [noise_types.missing.high]
-feature_ratio = 0.5
-missing_ratio = 0.2
+feature_ratio = 0.2
+missing_ratio = 0.1
 
 [noise_types.duplicate.low]
 feature_ratio = 0.2
 duplicate_ratio = 0.03
-duplicate_length = 15
+duplicate_length = 10
 
 [noise_types.duplicate.high]
-feature_ratio = 0.5
+feature_ratio = 0.3
 duplicate_ratio = 0.08
-duplicate_length = 50
+duplicate_length = 30
 
 [noise_types.delay.low]
 feature_ratio = 0.2
-delay_length = 100
+delay_length = 10
 
 [noise_types.delay.high]
-feature_ratio = 0.4
-delay_length = 200
+feature_ratio = 0.3
+delay_length = 20
 
 [noise_types.mix_1]
 types = ['noise', 'missing']

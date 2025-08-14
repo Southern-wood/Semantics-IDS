@@ -3,15 +3,15 @@
 # --- Basic Configuration ---
 
 # Maximum number of parallel jobs
-MAX_CONCURRENT=3
-device_list=("1" "2" "3" "5" "6" "7")
+MAX_CONCURRENT=6
+device_list=("0" "1" "2" "3" "4" "5")
 MAX_CPU_PER_GPU=2
 # Delay (in seconds) before starting the *next* job
 INITIAL_START_DELAY=45 # Delay before starting jobs for gpu memory allocation
 # Maximum number of retries for a failed task
 MAX_RETRIES=5
 # Delay (in seconds) between retries
-RETRY_DELAY=500
+RETRY_DELAY=100
 # Log directory
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR" # make sure the log directory exists
@@ -40,6 +40,7 @@ FAILED="$FAIL[FAILED]$ENDC"
 if ! command -v jq &> /dev/null
 then
     echo "jq command could not be found. Please install jq to parse cross.json."
+    echo "Try \`conda install -c conda-forge jq\` if you are using conda."
     exit 1
 fi
 
@@ -48,17 +49,8 @@ if [ ! -f "scripts/cross.json" ]; then
     exit 1
 fi
 
-# Store JSON content in variables
-single_types=($(jq -r '.single[]' scripts/cross.json))
-mixup_types=($(jq -r '.mix[]' scripts/cross.json))
-
-quality_types=("pure" "${mixup_types[@]}")
-dataset_list=("HAI")
-modes=("train" "test")
-# modes=( "test")
-
-# quality_types=("pure" "noise" "missing" "duplicate" "delay" "mismatch" "mix_1" "mix_2")
-
+# dataset_list=("SWaT" "WADI" "HAI")
+dataset_list=("SWaT")
 
 
 # --- Helper function to run a single task with retries ---
@@ -135,10 +127,10 @@ run_task() {
                     --quality_type \"$train_quality\" \
                     --level \"$train_level\" \
                     --mode \"$mode\""
+    # if there is a target_test_data 
     if [[ -n "$target_test_data" ]]; then
-        cmd_base="$cmd_base --target_test_data \"$target_test_data\""
+        cmd_base="$cmd_base --target_test_data $target_test_data"
     fi
-
     local cmd=""
     local log_file_suffix=""
     local task_desc_suffix=""
@@ -154,14 +146,14 @@ run_task() {
         task_desc_suffix="${train_quality} ${train_level} ${dataset_name}"
     fi
 
+    log_file="${LOG_DIR}/${log_file_suffix}.log"
+    
     if [[ "$mode" == "train" ]]; then
         task_desc="Training on $task_desc_suffix"
-        log_file="${LOG_DIR}/${log_file_suffix}_train.log"
     elif [[ -n "$target_test_data" ]]; then
         log_file="${LOG_DIR}/${log_file_suffix}_test_on_${target_test_data}.log"
         task_desc="Testing model from $task_desc_suffix on $target_test_data"
     else 
-        log_file="${LOG_DIR}/${log_file_suffix}.log"
         task_desc="Testing model from $task_desc_suffix on its own data type"
     fi
 
@@ -202,17 +194,7 @@ export OMP_NUM_THREADS=$MAX_CPU_PER_GPU
 export TQDM_DISABLE=1
 
 
-# --- Generate Normal Tasks ---
-generate_args() {
-    for dataset in "${dataset_list[@]}"; do
-        for mode in "${modes[@]}"; do
-            for quality in "${quality_types[@]}"; do
-                echo "$dataset $quality low $mode"
-            done
-        done
-    done
-}
-
+# --- Generate Cross-Category Tasks ---
 generate_cross_args() {
     for dataset in "${dataset_list[@]}"; do
         # We need test mode only
@@ -230,10 +212,7 @@ generate_cross_args() {
 
 # --- Main Script ---
 echo -e "$HEADER======= Parallel Tasks Started ========$ENDC"
-normal_jobs=$(generate_args | wc -l)
-cross_jobs=$(generate_cross_args | wc -l)
-total_jobs=$((normal_jobs + cross_jobs))
-echo "Job count: $normal_jobs + $cross_jobs = $total_jobs"
+echo Job count: $(echo $(generate_cross_args | wc -l))
 echo Maximum concurrent jobs: $MAX_CONCURRENT
 echo Initial start delay: $INITIAL_START_DELAY seconds
 echo Maximum retries: $MAX_RETRIES
@@ -241,18 +220,11 @@ echo Retry delay: $RETRY_DELAY seconds
 echo "==========================================="
 echo "Using GPU count: ${#device_list[@]}"
 echo "Device list: ${device_list[*]}"
-echo -e "$BLUE=========== Normal Tasks ============ $ENDC"
-generate_args | parallel --line-buffer \
-    --jobs $MAX_CONCURRENT \
-    --delay $INITIAL_START_DELAY \
-    --colsep ' ' \
-    run_task {1} {2} {3} {4}
-echo -e "$BLUE=========== Cross Tasks ============= $ENDC"
+echo "==========================================="
+# Cross Tasks
 generate_cross_args | parallel --line-buffer \
     --jobs $MAX_CONCURRENT \
     --delay $INITIAL_START_DELAY \
     --colsep ' ' \
     run_task {1} {2} {3} {4} {5}
-echo -e "$HEADER======= Parallel Tasks Completed ========$ENDC"
-
-# CUDA_VISIBLE_DEVICES=6,7 torchrun --nproc_per_node=1 --master_port=29600 main.py
+echo "===== All Tasks Completed ====="

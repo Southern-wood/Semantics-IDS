@@ -77,7 +77,8 @@ def load_SWaT(dataset_folder):
       if all(isinstance(value, int) and value == int(value) for value in attack_pd[column])
   ]
   print("SWaT dataset prepared.")
-
+  Final_labels = (labels.max(axis=1) >= 1).astype(int)
+  print("anomaly rate in SWaT dataset:", Final_labels.sum() / len(Final_labels))
   return normal_pd, attack_pd, labels, categorical_column
 
 
@@ -151,6 +152,8 @@ def load_WADI(dataset_folder):
     if all(isinstance(value, int) and value == int(value) for value in train[column])
   ]
   print("WADI dataset prepared.")
+  Final_labels = (labels.max(axis=1) >= 1).astype(int)
+  print("anomaly rate in WADI dataset:", Final_labels.sum() / len(Final_labels))
   return train, test, labels, categorical_column
 
 
@@ -195,11 +198,13 @@ def load_HAI(data_folder):
     if all(isinstance(value, int) and value == int(value) for value in train[column])
   ]
   print("HAI dataset prepared.")
+  Final_labels = (labels.max(axis=1) >= 1).astype(int)
+  print("anomaly rate in HAI dataset:", Final_labels.sum() / len(Final_labels))
   return train, test, labels, categorical_column
 
 # Main function for testing only
 if __name__ == "__main__":
-  dataset_folder = 'dataset'
+  dataset_folder = 'dataset' 
   load_SWaT(dataset_folder)
   load_WADI(dataset_folder)
   load_HAI(dataset_folder)

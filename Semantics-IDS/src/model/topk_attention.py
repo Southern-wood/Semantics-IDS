@@ -59,7 +59,7 @@ class TopM_MHSA_Block(nn.Module):
 
 ########### window-based self-attention #############
 class Attention_Sparse_Top_M(nn.Module):
-    def __init__(self, dim, win_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.1, top_m=99):
+    def __init__(self, dim, win_size, num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0.1, top_m=0.25):
 
         super().__init__()
         self.dim = dim
@@ -67,7 +67,7 @@ class Attention_Sparse_Top_M(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = qk_scale or head_dim ** -0.5
-        self.top_m = top_m
+        self.top_m = int(top_m * win_size[0] * win_size[1])
 
         self.attn_dropout_p = attn_drop
         
@@ -120,6 +120,7 @@ class Attention_Sparse_Top_M(nn.Module):
 
         topm_k_val = min(self.top_m, Nkv_actual) # Use Nkv_actual for topk
         _, indices_to_keep = torch.topk(raw_attn, k=topm_k_val, dim=-1, largest=True)
+        # print(f"Using {topm_k_val} top-k values of all {Nkv_actual} values.")
 
         padded_bias_tensor_shape = list(raw_attn.shape)
         padded_bias_tensor_shape[-1] = Nkv_padded

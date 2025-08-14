@@ -129,10 +129,11 @@ def train_step(enhanced_model, data_loader, normalization):
   return avg_loss, optimizer.param_groups[0]['lr']
 
 
-def inference(enhanced_model, data_loader, normalization):
+def inference(enhanced_model, data_loader, normalization=None):
   MSELoss = nn.MSELoss(reduction='none')
-  mean_tensor = torch.from_numpy(normalization.mean_)
-  scale_tensor = torch.from_numpy(normalization.scale_)
+  if normalization is not None:
+    mean_tensor = torch.from_numpy(normalization.mean_)
+    scale_tensor = torch.from_numpy(normalization.scale_)
   loss_list = []
   
   enhanced_model.eval()
@@ -152,11 +153,12 @@ def inference(enhanced_model, data_loader, normalization):
 
     z = enhanced_model(window, 'test')
     elem = elem.to(z.device)
-    mean_tensor = mean_tensor.to(device=z.device)
-    scale_tensor = scale_tensor.to(device=z.device)
     z, elem = z.squeeze(0), elem.squeeze(0)
-    z = (z - mean_tensor) / scale_tensor
-    elem = (elem - mean_tensor) / scale_tensor
+    if normalization is not None:
+      mean_tensor = mean_tensor.to(device=z.device)
+      scale_tensor = scale_tensor.to(device=z.device)
+      z = (z - mean_tensor) / scale_tensor
+      elem = (elem - mean_tensor) / scale_tensor
     loss = MSELoss(z, elem)
     loss_list.append(loss.detach().cpu())
 
@@ -189,7 +191,7 @@ if __name__ == '__main__':
   logger.info(f"Model file path: {model_save_path}")
 
   model, optimizer, scheduler, epoch, accuracy_list = load_model(feat_num, batch_size, model_save_path)
-  enhanced_model = FeatureProxy(model, optimizer, scheduler, feat_num, args.feature_selection_batch_size, args.relability_rate)
+  enhanced_model = FeatureProxy(model, optimizer, scheduler, feat_num, args.feature_selection_batch_size, args.relability_rate, args.minimum_feature_num)
 
   if args.mode == 'train':
     logger.info(f'{color.HEADER}Training Trans-Semantics on {args.dataset} with num_epochs : {num_epoch}{color.ENDC}')
@@ -216,8 +218,17 @@ if __name__ == '__main__':
 
   train_path = dataset_path(prefix, dataset, quality_type, level, 'train')
   norm = get_normalization(normal_path=train_path, win_size=model.n_window)
-  test_path, label_path = dataset_path(prefix, dataset, quality_type, level, 'test')
-  val_path = dataset_path(prefix, dataset, quality_type, level, 'val')
+  
+  if args.target_test_data is not None:
+    logger.info("Using target test data: " + args.target_test_data)
+    _, num, level = args.target_test_data.split('_')
+    test_quality_type = _ + '_' + num
+    test_level = level
+    test_path, label_path = dataset_path(prefix, dataset, test_quality_type, test_level, 'test')
+    val_path = dataset_path(prefix, dataset, test_quality_type, test_level, 'val')
+  else:
+    test_path, label_path = dataset_path(prefix, dataset, quality_type, level, 'test')
+    val_path = dataset_path(prefix, dataset, quality_type, level, 'val')
 
   # build dataloaders
   train_loader = get_loader_segment(mode='train', noshuffle=True, normal_path=train_path, batch_size=batch_size, win_size=model.n_window)
@@ -251,8 +262,11 @@ if __name__ == '__main__':
   with torch.no_grad():
     logger.info(f'{color.BOLD}Evaluating on {test_path} {color.ENDC}')
     loss = inference(enhanced_model, data_loader=test_loader, normalization=norm)
-    logger.info(f'{color.BOLD}Getting loss on Training set for POT {color.ENDC}')
+    logger.info(f'{color.BOLD}Getting loss on validation set for POT {color.ENDC}')
+    val_loader = get_loader_segment(mode='val', normal_path=train_path, validation_path=val_path, batch_size=batch_size, win_size=model.n_window)
     lossT = inference(enhanced_model, data_loader=train_loader, normalization=norm)
+    lossV = inference(enhanced_model, data_loader=val_loader, normalization=norm)
+    lossT = np.concatenate((lossT, lossV), axis=0)
 
   indices = enhanced_model.selected_features()
 
@@ -269,8 +283,11 @@ if __name__ == '__main__':
     # pot_eval return raw prediction, without point adjustment
     _, feature_y_pred = pot_eval(feature_lossT, feature_loss, labelsFinal)
     prediction_rate = np.sum(feature_y_pred) / len(feature_y_pred)
-    if prediction_rate > 0.5: # if the prediction rate makes no sense, we just skip this feature
-      continue
+    if prediction_rate > 0.5:
+      logger.info(f"Skipping feature {feature_index} with prediction rate {prediction_rate:.4f}")
+      continue  # Skip features with high prediction rate that make no sense
+
+    logger.info(f"Feature {feature_index} prediction rate: {prediction_rate:.4f}")
     df[feature_index] = feature_y_pred
   
   positive_sum = df.sum(axis=1)

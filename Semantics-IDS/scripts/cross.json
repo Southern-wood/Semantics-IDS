@@ -1,7 +1,45 @@
 {
   "single": ["noise", "missing", "duplicate", "delay"],
   "mix": ["mix_1", "mix_2", "mix_3", "mix_4", "mix_5",
-          "mix_6", "mix_7", "mix_8", "mix_9", "mix_10",
-          "mix_all"
-  ]
+          "mix_6", "mix_7", "mix_8", "mix_9", "mix_10"
+  ],
+  "mix_backup": ["mix_6", "mix_7", "mix_8", "mix_9", "mix_10"],
+
+  "mix_1": ["noise", "missing"],
+  "mix_2": ["noise", "duplicate"],
+  "mix_3": ["noise", "delay"],
+  "mix_4": ["missing", "duplicate"],
+  "mix_5": ["missing", "delay"],
+  "mix_6": ["duplicate", "delay"],
+  "mix_7": ["noise", "missing", "duplicate"],
+  "mix_8": ["noise", "missing", "delay"],
+  "mix_9": ["noise", "duplicate", "delay"],
+  "mix_10": ["missing", "duplicate", "delay"],
+
+  "cross_settings": {
+    "mix_1": [
+      {"add": "duplicate", "target": "mix_7"},
+      {"add": "delay", "target": "mix_8"}
+    ],
+    "mix_2": [
+      {"add": "missing", "target": "mix_8"},
+      {"add": "delay", "target": "mix_10"}
+    ],
+    "mix_3": [
+      {"add": "missing", "target": "mix_7"},
+      {"add": "duplicate", "target": "mix_10"}
+    ],
+    "mix_4": [
+      {"add": "noise", "target": "mix_8"},
+      {"add": "delay", "target": "mix_9"}
+    ],
+    "mix_5": [
+      {"add": "noise", "target": "mix_9"},
+      {"add": "duplicate", "target": "mix_10"}
+    ],
+    "mix_6": [
+      {"add": "noise", "target": "mix_7"},
+      {"add": "missing", "target": "mix_10"}
+    ]
+  }
 }

@@ -320,12 +320,22 @@ class SPOT:
             vs = v(s)
             return us * vs - 1
 
+        # def jac_w(Y, t):
+        #     s = 1 + t * Y
+        #     us = u(s)
+        #     vs = v(s)
+        #     jac_us = (1 / t) * (1 - vs)
+        #     jac_vs = (1 / t) * (-vs + np.mean(1 / s ** 2))
+        #     return us * jac_vs + vs * jac_us
+
         def jac_w(Y, t):
             s = 1 + t * Y
             us = u(s)
             vs = v(s)
-            jac_us = (1 / t) * (1 - vs)
-            jac_vs = (1 / t) * (-vs + np.mean(1 / s ** 2))
+            jac_us = (1 / t) * (1 - vs) if t != 0 else 0
+            if np.any(s == 0):
+                s = np.where(s == 0, 1e-8, s)
+            jac_vs = (1 / t) * (-vs + np.mean(1 / s ** 2)) if t != 0 else 0
             return us * jac_vs + vs * jac_us
 
         Ym = self.peaks.min()
@@ -361,6 +371,8 @@ class SPOT:
 
         # we look for better candidates
         for z in zeros:
+            if z == 0 or np.isnan(z):
+                continue
             gamma = u(1 + z * self.peaks) - 1
             sigma = gamma / z
             ll = SPOT._log_likelihood(self.peaks, gamma, sigma)
@@ -1355,6 +1367,8 @@ class dSPOT:
 
         # we look for better candidates
         for z in zeros:
+            if z == 0 or np.isnan(z):
+                continue 
             gamma = u(1 + z * self.peaks) - 1
             sigma = gamma / z
             ll = dSPOT._log_likelihood(self.peaks, gamma, sigma)
@@ -2031,3 +2045,459 @@ class bidSPOT:
         return fig
 
 
+from scipy.optimize import minimize
+
+class quikSPOT:
+    """
+    This class allows to run SPOT algorithm on univariate dataset (upper-bound)
+
+    Attributes
+    ----------
+    proba : float
+        Detection level (risk), chosen by the user
+
+    extreme_quantile : float
+        current threshold (bound between normal and abnormal events)
+
+    data : numpy.array
+        stream
+
+    init_data : numpy.array
+        initial batch of observations (for the calibration/initialization step)
+
+    init_threshold : float
+        initial threshold computed during the calibration step
+
+    peaks : numpy.array
+        array of peaks (excesses above the initial threshold)
+
+    n : int
+        number of observed values
+
+    Nt : int
+        number of observed peaks
+    """
+
+    def __init__(self, q=1e-4):
+        """
+        Constructor
+        Parameters
+        ----------
+        q : float
+            Detection level (risk)
+        """
+        self.proba = q
+        self.extreme_quantile = None
+        self.data = None
+        self.init_data = None
+        self.init_threshold = None
+        self.peaks = None
+        self.n = 0
+        self.Nt = 0
+
+    def __str__(self):
+        s = ''
+        s += 'Streaming Peaks-Over-Threshold Object\n'
+        s += 'Detection level q = %s\n' % self.proba
+        if self.data is not None:
+            s += 'Data imported : Yes\n'
+            s += '\t initialization  : %s values\n' % self.init_data.size
+            s += '\t stream : %s values\n' % self.data.size
+        else:
+            s += 'Data imported : No\n'
+            return s
+
+        if self.n == 0:
+            s += 'Algorithm initialized : No\n'
+        else:
+            s += 'Algorithm initialized : Yes\n'
+            s += '\t initial threshold : %s\n' % self.init_threshold
+
+            r = self.n - self.init_data.size
+            if r > 0:
+                s += 'Algorithm run : Yes\n'
+                s += '\t number of observations : %s (%.2f %%)\n' % (r, 100 * r / self.n)
+            else:
+                s += '\t number of peaks  : %s\n' % self.Nt
+                s += '\t extreme quantile : %s\n' % self.extreme_quantile
+                s += 'Algorithm run : No\n'
+        return s
+
+    def fit(self, init_data, data):
+        """
+        Import data to SPOT object
+
+        Parameters
+        ----------
+        init_data : list, numpy.array or pandas.Series or int or float
+            initial batch to calibrate the algorithm (or a fraction/size specifier)
+        data : list, numpy.array or pandas.Series
+            data for the run
+        """
+        # Convert `data` to numpy array
+        if isinstance(data, (list, tuple)):
+            self.data = np.array(data)
+        elif isinstance(data, np.ndarray):
+            self.data = data
+        elif hasattr(data, "values"):  # pandas.Series or similar
+            self.data = data.values
+        else:
+            raise TypeError(f"This data format ({type(data)}) is not supported")
+
+        # Handle `init_data` specification
+        if isinstance(init_data, (list, tuple)):
+            self.init_data = np.array(init_data)
+        elif isinstance(init_data, np.ndarray):
+            self.init_data = init_data
+        elif hasattr(init_data, "values"):  # pandas.Series
+            self.init_data = init_data.values
+        elif isinstance(init_data, int):
+            if init_data < 0 or init_data > self.data.size:
+                raise ValueError("Integer init_data must be in [0, len(data)]")
+            self.init_data = self.data[:init_data]
+            self.data = self.data[init_data:]
+        elif isinstance(init_data, float) and 0 < init_data < 1:
+            r = int(init_data * self.data.size)
+            self.init_data = self.data[:r]
+            self.data = self.data[r:]
+        else:
+            raise ValueError("The initial data cannot be set")
+        return
+
+    def add(self, data):
+        """
+        Append data to the already fitted data
+
+        Parameters
+        ----------
+        data : list, numpy.array or pandas.Series
+            data to append
+        """
+        if isinstance(data, (list, tuple)):
+            arr = np.array(data)
+        elif isinstance(data, np.ndarray):
+            arr = data
+        elif hasattr(data, "values"):
+            arr = data.values
+        else:
+            raise TypeError(f"This data format ({type(data)}) is not supported")
+
+        self.data = np.concatenate((self.data, arr))
+        return
+
+    def initialize(self, level=0.98, min_extrema=False, verbose=True):
+        """
+        Run the calibration (initialization) step
+
+        Parameters
+        ----------
+        level : float
+            (default 0.98) Probability associated with the initial threshold t
+        verbose : bool
+            (default True) If True, prints details about the batch initialization
+        min_extrema : bool
+            (default False) If True, find min extrema instead of max extrema
+        """
+        if min_extrema:
+            # Invert data if we are looking for minimum-extreme instead of maximum-extreme
+            self.init_data = -self.init_data
+            self.data = -self.data
+            level = 1 - level
+
+        level = level - floor(level)  # ensure level in [0,1)
+        n_init = self.init_data.size
+
+        # Use numpy.partition to find the empirical quantile without full sort
+        k = int(level * n_init)
+        if k < 0:
+            k = 0
+        elif k >= n_init:
+            k = n_init - 1
+        threshold = np.partition(self.init_data, k)[k]
+        self.init_threshold = float(threshold)
+
+        # initial peaks (excesses above threshold)
+        excesses = self.init_data[self.init_data > self.init_threshold] - self.init_threshold
+        self.peaks = excesses.copy()
+        self.Nt = excesses.size
+        self.n = n_init
+
+        if verbose:
+            print(f"Initial threshold : {self.init_threshold}")
+            print(f"Number of peaks : {self.Nt}")
+            print("Grimshaw maximum log-likelihood estimation ... ", end="")
+
+        # Estimate GPD parameters via Grimshaw's trick
+        g, s, lval = self._grimshaw()
+        self.extreme_quantile = self._quantile(g, s)
+
+        if verbose:
+            print("[done]")
+            print(f"\tγ = {g}")
+            print(f"\tσ = {s}")
+            print(f"\tL = {lval}")
+            print(f"Extreme quantile (probability = {self.proba}): {self.extreme_quantile}")
+
+        return
+
+    @staticmethod
+    def _rootsFinder(fun, jac, bounds, npoints, method):
+        """
+        Find possible roots of a scalar function within bounds
+
+        Parameters
+        ----------
+        fun : function
+            scalar function
+        jac : function
+            first order derivative of the function
+        bounds : tuple
+            (min, max) interval for the roots search
+        npoints : int
+            maximum number of roots to output
+        method : str
+            'regular' or 'random' sampling for initial guesses
+
+        Returns
+        -------
+        numpy.array
+            possible roots of the function
+        """
+        left, right = bounds
+        if method == 'regular':
+            step = (right - left) / (npoints + 1)
+            if step == 0:
+                left, right = (0.0, 1e-4)
+                step = 1e-5
+            X0 = np.linspace(left + step, right - step, npoints)
+        else:  # 'random'
+            X0 = np.random.uniform(left, right, npoints)
+
+        # Objective over vector X: sum of squares of fun(x_i)
+        def objFun(X):
+            fx = fun(X)
+            return np.sum(fx * fx)
+
+        # Gradient of objective: 2 * Σ[f(x_i) * f'(x_i)]
+        def jacFun(X):
+            fx = fun(X)
+            jx = jac(X)
+            return 2 * fx * jx
+
+        # Use L-BFGS-B on all points together
+        bounds_list = [bounds] * X0.size
+        opt = minimize(objFun, X0, method='L-BFGS-B', jac=jacFun, bounds=bounds_list)
+        roots = np.unique(np.round(opt.x, decimals=5))
+        return roots
+
+    @staticmethod
+    def _log_likelihood(Y, gamma, sigma):
+        """
+        Compute the log-likelihood for the Generalized Pareto Distribution (μ=0)
+
+        Parameters
+        ----------
+        Y : numpy.array
+            observations (excesses)
+        gamma : float
+            GPD shape parameter
+        sigma : float
+            GPD scale parameter (>0)
+
+        Returns
+        -------
+        float
+            log-likelihood
+        """
+        n = Y.size
+        if gamma != 0.0:
+            tau = gamma / sigma
+            # Avoid invalid values inside log
+            inner = 1 + tau * Y
+            return -n * log(sigma) - (1 + 1 / gamma) * np.log(inner).sum()
+        else:
+            # In the limit gamma -> 0
+            return n * (1 + log(Y.mean()))
+
+    def _grimshaw(self, epsilon=1e-8, n_points=10):
+        """
+        Compute the GPD parameters estimation with the Grimshaw's trick
+
+        Parameters
+        ----------
+        epsilon : float
+            numerical parameter (default: 1e-8)
+        n_points : int
+            maximum number of candidate roots (default: 10)
+
+        Returns
+        -------
+        gamma_best, sigma_best, ll_best : floats
+            estimated GPD parameters and corresponding log-likelihood
+        """
+        Y = self.peaks
+        # Precompute min, max, mean of peaks
+        Ym = Y.min()
+        YM = Y.max()
+        Ymean = Y.mean()
+        n_peaks = Y.size
+
+        # Define helper functions
+        def u(s):
+            return 1 + np.log(s).mean()
+
+        def v(s):
+            return np.mean(1 / s)
+
+        def w(t_array):
+            s_arr = 1 + t_array * Y[:, None]  # shape (Nt, len(t_array))
+            us = 1 + np.log(s_arr).mean(axis=0)
+            vs = np.mean(1 / s_arr, axis=0)
+            return us * vs - 1
+
+        def jac_w(t_array):
+            s_arr = 1 + t_array * Y[:, None]
+            vs = np.mean(1 / s_arr, axis=0)
+            vs2 = np.mean(1 / (s_arr * s_arr), axis=0)
+            us = 1 + np.log(s_arr).mean(axis=0)
+            # Handle division by zero cases
+            t_nonzero = np.where(t_array != 0, t_array, 1.0)
+            jac_us = (1 / t_nonzero) * (1 - vs)
+            jac_vs = (1 / t_nonzero) * (-vs + vs2)
+            return us * jac_vs + vs * jac_us
+
+        # Bounds for t
+        a = -1.0 / YM
+        if abs(a) < 2 * epsilon:
+            epsilon_local = abs(a) / n_points if abs(a) / n_points > 1e-16 else 1e-8
+            a += epsilon_local
+        else:
+            a += epsilon
+        b = 2 * (Ymean - Ym) / (Ymean * Ym)
+        c = 2 * (Ymean - Ym) / (Ym * Ym)
+
+        # Find possible roots on both intervals
+        left_roots = SPOT._rootsFinder(
+            lambda t: w(np.atleast_1d(t)),
+            lambda t: jac_w(np.atleast_1d(t)),
+            (a, -epsilon),
+            n_points,
+            'regular'
+        )
+        right_roots = SPOT._rootsFinder(
+            lambda t: w(np.atleast_1d(t)),
+            lambda t: jac_w(np.atleast_1d(t)),
+            (b, c),
+            n_points,
+            'regular'
+        )
+        zeros = np.concatenate((left_roots, right_roots))
+
+        # Initialize with gamma = 0
+        gamma_best = 0.0
+        sigma_best = Ymean
+        ll_best = SPOT._log_likelihood(Y, gamma_best, sigma_best)
+
+        # Evaluate each candidate root
+        for z in zeros:
+            if z == 0.0 or np.isnan(z):
+                continue
+            s_val = 1 + z * Y
+            gamma = (1 + np.log(s_val).mean()) - 1
+            sigma = gamma / z
+            ll_val = SPOT._log_likelihood(Y, gamma, sigma)
+            if ll_val > ll_best:
+                gamma_best = gamma
+                sigma_best = sigma
+                ll_best = ll_val
+
+        return float(gamma_best), float(sigma_best), float(ll_best)
+
+    def _quantile(self, gamma, sigma):
+        """
+        Compute the quantile at level 1 - q for the GPD(γ,σ,μ=0)
+
+        Parameters
+        ----------
+        gamma : float
+            GPD shape parameter
+        sigma : float
+            GPD scale parameter
+
+        Returns
+        -------
+        float
+            estimated extreme quantile
+        """
+        r = (self.n * self.proba) / self.Nt
+        if gamma != 0.0:
+            return self.init_threshold + (sigma / gamma) * (r ** (-gamma) - 1)
+        else:
+            return self.init_threshold - sigma * log(r)
+
+    def run(self, with_alarm=True, dynamic=True):
+        """
+        Run SPOT on the stream
+
+        Parameters
+        ----------
+        with_alarm : bool
+            (default True) If False, SPOT will adapt threshold assuming no alarms
+        dynamic : bool
+            (default True) If True, threshold is updated on each new peak
+
+        Returns
+        -------
+        dict with keys 'thresholds' (list of quantiles) and 'alarms' (indices of alarms)
+        """
+        if self.n > self.init_data.size:
+            raise RuntimeError("Algorithm has already been run; re-initialize before running again")
+
+        thresholds = []
+        alarms = []
+
+        # Local references for speed
+        init_thr = self.init_threshold
+        peaks = self.peaks
+        Nt_local = self.Nt
+        n_local = self.n
+        data_arr = self.data
+        proba_local = self.proba
+
+        for i, xi in enumerate(data_arr):
+            if not dynamic:
+                if xi > init_thr and with_alarm:
+                    self.extreme_quantile = init_thr
+                    alarms.append(i)
+                # If not dynamic and no alarm, no update
+            else:
+                if xi > self.extreme_quantile:
+                    if with_alarm:
+                        alarms.append(i)
+                    else:
+                        excess = xi - init_thr
+                        peaks = np.append(peaks, excess)
+                        Nt_local += 1
+                        n_local += 1
+                        self.peaks = peaks
+                        self.Nt = Nt_local
+                        self.n = n_local
+                        g, s, _ = self._grimshaw()
+                        self.extreme_quantile = self._quantile(g, s)
+                elif xi > init_thr:
+                    excess = xi - init_thr
+                    peaks = np.append(peaks, excess)
+                    Nt_local += 1
+                    n_local += 1
+                    self.peaks = peaks
+                    self.Nt = Nt_local
+                    self.n = n_local
+                    g, s, _ = self._grimshaw()
+                    self.extreme_quantile = self._quantile(g, s)
+                else:
+                    n_local += 1
+                    self.n = n_local
+
+            thresholds.append(self.extreme_quantile)
+
+        return {'thresholds': thresholds, 'alarms': alarms}
